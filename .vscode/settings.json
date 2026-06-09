@@ -13,5 +13,6 @@
     "--compile-commands-dir=c:\\Users\\Rodri\\Projects\\arduino_sentis\\arduino\\sentis\\build"
   ],
   "idf.portWin": "COM3",
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "C_Cpp.errorSquiggles": "disabled"
 }
