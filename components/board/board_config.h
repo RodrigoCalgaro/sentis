@@ -10,10 +10,12 @@
 #define BOARD_HAPTIC_LEFT_GPIO    3
 #define BOARD_HAPTIC_RIGHT_GPIO   6
 
-// Phase 3 — LiDAR SP10M01 (UART1, 3.3V TTL, baud TBD experimentally)
+// Phase 3 — LiDAR SP10M01 (UART1, full-duplex, 3.3V)
+// Cable colors on this unit: Verde=TX  Amarillo=RX  Negro=GND  Rojo=VCC(3V3)
+// No level shifter needed — sensor and ESP32 both operate at 3.3V logic.
 #define BOARD_LIDAR_UART_NUM      1       // UART_NUM_1
-#define BOARD_LIDAR_UART_RX_GPIO  4       // SP10M01 TX (red)  → ESP RX
-#define BOARD_LIDAR_UART_TX_GPIO  5       // ESP TX → SP10M01 RX (black)
+#define BOARD_LIDAR_UART_RX_GPIO  4       // sensor TX (Verde)   → ESP RX GPIO4
+#define BOARD_LIDAR_UART_TX_GPIO  5       // ESP TX GPIO5        → sensor RX (Amarillo)
 #define BOARD_LIDAR_UART_BAUD     115200
 
 // Phase 2 — Audio (onboard ES8311 codec + NS4150B amplifier)
