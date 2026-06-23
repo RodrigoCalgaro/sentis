@@ -17,7 +17,15 @@
 #define LEDC_RESOLUTION  LEDC_TIMER_10_BIT
 
 #define DUTY_OFF  0
-#define DUTY_MAX  ((1 << 10) - 1)   // 1023 = 100 % de intensidad
+#define DUTY_MAX  ((1 << 10) - 1)   // 1023 = 100 % de intensidad (valor tope del DAC)
+
+// Convierte un porcentaje (0–100) al valor de duty correspondiente.
+#define DUTY_PCT(pct)  ((uint32_t)((pct) * DUTY_MAX / 100))
+
+// Intensidad de vibración para los patrones de pulso (0–100 %).
+// Cambiar este valor afecta a PULSE_LEFT, PULSE_RIGHT y PULSE_BOTH.
+// ALERT_BOTH siempre usa DUTY_MAX (100 %) porque es la alerta de máxima urgencia.
+#define HAPTIC_PULSE_INTENSITY_PCT  100
 
 // Duración de cada fase del pulso en los patrones intermitentes.
 // 200 ms ON + 200 ms OFF = frecuencia de pulso percibida de ~2,5 Hz.
@@ -54,7 +62,7 @@ static void haptic_task(void *arg)
 
             // Motor izquierdo enciende sólo → señal de peligro a la izquierda.
             case HAPTIC_PATTERN_PULSE_LEFT:
-                set_duty(LEDC_CHANNEL_0, DUTY_MAX);
+                set_duty(LEDC_CHANNEL_0, DUTY_PCT(HAPTIC_PULSE_INTENSITY_PCT));
                 set_duty(LEDC_CHANNEL_1, DUTY_OFF);
                 vTaskDelay(pdMS_TO_TICKS(PULSE_ON_MS));
                 set_duty(LEDC_CHANNEL_0, DUTY_OFF);
@@ -63,7 +71,7 @@ static void haptic_task(void *arg)
 
             // Motor derecho enciende sólo → señal de peligro a la derecha.
             case HAPTIC_PATTERN_PULSE_RIGHT:
-                set_duty(LEDC_CHANNEL_1, DUTY_MAX);
+                set_duty(LEDC_CHANNEL_1, DUTY_PCT(HAPTIC_PULSE_INTENSITY_PCT));
                 set_duty(LEDC_CHANNEL_0, DUTY_OFF);
                 vTaskDelay(pdMS_TO_TICKS(PULSE_ON_MS));
                 set_duty(LEDC_CHANNEL_1, DUTY_OFF);
@@ -73,8 +81,8 @@ static void haptic_task(void *arg)
             // Ambos motores pulsan juntos → aviso de obstáculo frontal en zona
             // de precaución. El ritmo intermitente indica "atención, aún hay margen".
             case HAPTIC_PATTERN_PULSE_BOTH:
-                set_duty(LEDC_CHANNEL_0, DUTY_MAX);
-                set_duty(LEDC_CHANNEL_1, DUTY_MAX);
+                set_duty(LEDC_CHANNEL_0, DUTY_PCT(HAPTIC_PULSE_INTENSITY_PCT));
+                set_duty(LEDC_CHANNEL_1, DUTY_PCT(HAPTIC_PULSE_INTENSITY_PCT));
                 vTaskDelay(pdMS_TO_TICKS(PULSE_ON_MS));
                 set_duty(LEDC_CHANNEL_0, DUTY_OFF);
                 set_duty(LEDC_CHANNEL_1, DUTY_OFF);
