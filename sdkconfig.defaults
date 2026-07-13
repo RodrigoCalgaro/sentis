@@ -1,0 +1,93 @@
+# =============================================================================
+# sdkconfig.defaults — configuración base del proyecto SENTIS
+#
+# Este archivo define los valores por defecto del proyecto que DEBEN ser
+# distintos del default de ESP-IDF. Se aplica automáticamente la primera vez
+# que se compila en un equipo nuevo (cuando no existe sdkconfig), evitando
+# la necesidad de ejecutar idf.py menuconfig manualmente.
+#
+# IMPORTANTE: sdkconfig (generado por el build system) NO debe versionarse en
+# git porque es específico del equipo y se regenera desde este archivo.
+# sdkconfig.defaults SÍ debe estar en git — es la fuente de verdad del proyecto.
+#
+# Para aplicar cambios en un equipo que ya tiene sdkconfig:
+#   idf.py set-target esp32p4   (regenera sdkconfig desde defaults)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Target — ESP32-P4
+# -----------------------------------------------------------------------------
+CONFIG_IDF_TARGET="esp32p4"
+
+# -----------------------------------------------------------------------------
+# Revisión de chip — ESP32-P4 v1.x
+#
+# El ESP32-P4 existe en dos generaciones con diferencias de hardware muy
+# grandes: v0.x/v1.x y v3.x. Son mutuamente excluyentes en el build.
+# El chip de esta placa es v1.3, por lo que se activa SELECTS_REV_LESS_V3
+# para compilar el bootloader y los drivers para la generación v1.x.
+#
+# SIN este flag el bootloader falla al flashear con:
+#   "requires chip revision in range [v3.1 - v3.99] (this chip is revision v1.3)"
+# -----------------------------------------------------------------------------
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# -----------------------------------------------------------------------------
+# Frecuencia de CPU — ESP32-P4 v1.x
+#
+# En v1.x el CPLL corre a 360 MHz (no 400 MHz como en v3.x).
+# Las frecuencias válidas con SELECTS_REV_LESS_V3 son: 90, 180, 360 MHz.
+# Con 400 MHz el assert en esp_clk_init (clk.c:104) falla porque
+# rtc_clk_cpu_freq_mhz_to_config() devuelve false para esa frecuencia.
+# -----------------------------------------------------------------------------
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# -----------------------------------------------------------------------------
+# PSRAM (Phase 5 — cámara OV5647)
+#
+# El frame buffer de la cámara ocupa 800×640 = 512 KB en formato RAW8.
+# Este tamaño no entra en la SRAM interna del ESP32-P4 junto con el resto del
+# firmware, por lo que se requiere PSRAM externa.
+#
+# La placa de desarrollo ESP32-P4 incluye 32 MB de PSRAM en modo Hex (16 líneas),
+# que es el único modo disponible en este chip.
+# Velocidad 200 MHz es el default y el valor óptimo para P4.
+# -----------------------------------------------------------------------------
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# -----------------------------------------------------------------------------
+# Sensor de cámara OV5647 (Phase 5 — MIPI CSI-2)
+#
+# CONFIG_CAMERA_OV5647 habilita el driver del sensor en el componente
+# espressif/esp_cam_sensor. Sin este flag, el compilador no agrega el directorio
+# sensors/ov5647/include al path y ov5647.h no puede incluirse.
+#
+# Formato seleccionado: RAW8 800×640 @50fps — el de menor resolución disponible
+# en modo MIPI, suficiente para la heurística de detección de posición.
+#
+# AUTO_DETECT: el sensor se detecta automáticamente al arranque vía I2C sin
+# necesidad de llamar a ov5647_detect() manualmente (linker incluye el símbolo).
+# Igual llamamos a ov5647_detect() explícitamente en vision.c para obtener el
+# handle del sensor y controlar el formato — esta opción no genera conflicto.
+#
+# CSI_LINESYNC: sincronización de líneas MIPI (recomendado mantener activo).
+# -----------------------------------------------------------------------------
+CONFIG_CAMERA_OV5647=y
+CONFIG_CAMERA_OV5647_MIPI_RAW8_800X640_50FPS=y
+CONFIG_CAMERA_OV5647_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
+CONFIG_CAMERA_OV5647_CSI_LINESYNC_ENABLE=y
+
+# -----------------------------------------------------------------------------
+# Deshabilitar controlador SPI de cámara
+#
+# CAM_CTRL_SPI_ENABLE tiene default=y porque el ESP32-P4 soporta GPSPI.
+# Sin embargo, el OV5647 usa MIPI CSI-2, no SPI. El código vendorizado de
+# spi_slave.c en espressif/esp_cam_sensor v1.7.0 usa APIs internas de SPI
+# (spicommon_dma_chan_alloc, spicommon_bus_initialize_io) que cambiaron en
+# IDF v6.0.1, causando errores de compilación. Deshabilitamos esta opción
+# ya que no necesitamos el controlador SPI para ningún sensor del proyecto.
+# -----------------------------------------------------------------------------
+CONFIG_CAM_CTRL_SPI_ENABLE=n

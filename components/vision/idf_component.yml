@@ -1,0 +1,13 @@
+## IDF Component Manager Manifest File — componente vision
+## Las dependencias listadas aquí son exclusivas de este componente.
+## El component manager las descarga en managed_components/ al ejecutar:
+##   idf.py update-dependencies
+
+dependencies:
+  idf: ">=5.3"
+
+  ## Driver de abstracción de sensores de cámara de Espressif.
+  ## Provee el driver del OV5647 (MIPI CSI-2) y la capa sensor genérica
+  ## que consume el controlador CSI del ESP32-P4 (esp_driver_cam).
+  espressif/esp_cam_sensor:
+    version: ">=0.5.0"

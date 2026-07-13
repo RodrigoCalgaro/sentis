@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "sentis.c"
     INCLUDE_DIRS "."
-    REQUIRES haptics lidar freertos board
+    REQUIRES haptics lidar vision freertos board
 )

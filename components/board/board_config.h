@@ -48,6 +48,14 @@
 // Phase 5 — Camera OV5647 (MIPI CSI-2, onboard connector)
 // CSI data lanes: dedicated pins, not in GPIO header.
 // I2C control: shares BOARD_I2C_SDA_GPIO / BOARD_I2C_SCL_GPIO.
+//
+// MCLK/XCLK: GPIO54 es la salida de clock para la cámara en la ESP32-P4-Function-EV-Board.
+// El OV5647 necesita 24 MHz de XCLK para generar su PLL MIPI. Si el módulo
+// no tiene oscilador propio (la mayoría no lo tienen), sin este clock la cámara
+// responde a I2C pero no transmite datos MIPI.
+// Si el módulo tiene oscilador propio, se puede deshabilitar con BOARD_CAM_XCLK_GPIO = -1.
+#define BOARD_CAM_XCLK_GPIO       54
+#define BOARD_CAM_XCLK_FREQ_HZ    24000000
 
 // Phase 7 — ESP32-C6 coprocessor (integrated on module via SDIO)
 // No external wiring needed — excluded from prototype v1.

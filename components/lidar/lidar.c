@@ -143,7 +143,7 @@ static void lidar_task(void *arg)
         uint16_t dist_mm = sp10_distance_mm(f);
         s_distance_mm = dist_mm;
 
-        ESP_LOGI(TAG, "dist=%u mm", dist_mm);
+        // ESP_LOGI(TAG, "dist=%u mm", dist_mm);
     }
 }
 
