@@ -1313,6 +1313,12 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# SENTIS Monitor (solo desarrollo)
+#
+CONFIG_MONITOR_ENABLED=y
+# end of SENTIS Monitor (solo desarrollo)
+
+#
 # Compiler options
 #
 # default:
@@ -2346,7 +2352,6 @@ CONFIG_ESP_CONSOLE_UART=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 # default:
 CONFIG_ESP_CONSOLE_ROM_SERIAL_PORT_NUM=0
-# default:
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 # end of ESP-STDIO
 

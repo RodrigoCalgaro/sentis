@@ -2,6 +2,12 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stddef.h>
+
+// Dimensiones del frame capturado — expuestas para el componente monitor.
+#define VISION_FRAME_W   800
+#define VISION_FRAME_H   640
+#define VISION_FRAME_SZ  (VISION_FRAME_W * VISION_FRAME_H)
 
 // =============================================================================
 // vision.h — API pública del componente de visión
@@ -48,3 +54,9 @@ obstacle_side_t vision_get_obstacle_side(void);
 // Retorna true una vez que vision_task procesó al menos un frame correctamente.
 // Usar esto como guarda en proximity_task para evitar actuar sobre datos vacíos.
 bool vision_is_ready(void);
+
+// Copia el último frame capturado en dst. dst debe tener capacidad para al
+// menos VISION_FRAME_SZ bytes y estar en memoria accesible por DMA.
+// Bloquea hasta 50 ms esperando el mutex. Retorna false si la cámara aún no
+// capturó ningún frame o si dst/len son inválidos.
+bool vision_copy_display_frame(uint8_t *dst, size_t len);

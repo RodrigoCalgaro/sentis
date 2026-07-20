@@ -3,6 +3,7 @@
 #include "haptics.h"
 #include "lidar.h"
 #include "vision.h"
+#include "monitor.h"
 
 // =============================================================================
 // Umbrales de proximidad — ajustar estos dos valores para calibrar las distancias
@@ -134,6 +135,10 @@ void app_main(void)
     // opera en modo fallback (solo LiDAR, ambos motores), preservando el
     // comportamiento original de las fases anteriores.
     vision_init();
+
+    // Monitor WiFi solo para desarrollo (ver menuconfig → SENTIS Monitor).
+    // No fatal si falla (WiFi no configurado o AP inalcanzable).
+    monitor_init();
 
     xTaskCreate(proximity_task, "proximity", 2048, NULL, 5, NULL);
 }

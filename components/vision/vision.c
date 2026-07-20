@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <stdlib.h>
+#include <string.h>
 #include <inttypes.h>
 
 static const char *TAG = "vision";
@@ -52,7 +53,7 @@ static const char *TAG = "vision";
 // Ajustar durante calibración. Un valor bajo genera falsos positivos;
 // demasiado alto genera falsos negativos.
 // =============================================================================
-#define EDGE_THRESHOLD  12
+#define EDGE_THRESHOLD  5
 
 // Tasas MIPI del modo seleccionado (800×640 @50fps):
 //   IDI clock = 100 MHz → lane bit rate = 100 MHz × 4 = 400 Mbps
@@ -97,6 +98,12 @@ static IRAM_ATTR bool csi_trans_finished_cb(esp_cam_ctlr_handle_t handle,
 // lee proximity_task. La escritura de un uint8_t es atómica en RISC-V.
 static volatile obstacle_side_t s_side  = OBSTACLE_SIDE_NONE;
 static volatile bool            s_ready = false;
+
+// Buffer de display para el monitor de desarrollo. vision_task copia s_frame
+// aquí después de cada análisis. El mutex garantiza que el monitor no lee
+// mientras se copia, y que vision_task no escribe mientras el monitor codifica.
+static uint8_t           *s_display_frame = NULL;
+static SemaphoreHandle_t  s_display_mutex = NULL;
 
 // -----------------------------------------------------------------------------
 // analyze_frame — heurística de posición por actividad de bordes horizontales.
@@ -147,10 +154,13 @@ static obstacle_side_t analyze_frame(const uint8_t *frame)
         return OBSTACLE_SIDE_NONE;
     }
 
+    // El sensor OV5647 en esta placa entrega la imagen espejada horizontalmente:
+    // la zona izquierda del buffer RAW8 corresponde al lado derecho de la escena real.
+    // Se invierten LEFT/RIGHT para que la heurística coincida con la realidad.
     static const obstacle_side_t map[3] = {
-        OBSTACLE_SIDE_LEFT,
+        OBSTACLE_SIDE_RIGHT,   // zona 0 (izq. buffer) = derecha real
         OBSTACLE_SIDE_CENTER,
-        OBSTACLE_SIDE_RIGHT,
+        OBSTACLE_SIDE_LEFT,    // zona 2 (der. buffer) = izquierda real
     };
     return map[max_zone];
 }
@@ -168,6 +178,14 @@ static void vision_task(void *arg)
             s_side  = result;
             s_ready = true;
             ESP_LOGD(TAG, "frame ok — side=%s", side_names[result]);
+
+            // Copia no bloqueante al buffer de display para el monitor WiFi.
+            // Si el monitor está codificando (mutex tomado), se omite este frame.
+            if (s_display_frame &&
+                xSemaphoreTake(s_display_mutex, 0) == pdTRUE) {
+                memcpy(s_display_frame, s_frame, FRAME_SZ);
+                xSemaphoreGive(s_display_mutex);
+            }
         } else {
             ESP_LOGW(TAG, "frame timeout");
         }
@@ -384,6 +402,20 @@ esp_err_t vision_init(void)
 #endif
 
     // -------------------------------------------------------------------------
+    // 5. Buffer de display para el monitor WiFi (solo desarrollo)
+    //    Mismo tamaño que s_frame. Si no hay PSRAM suficiente, simplemente no
+    //    se habilita el monitor — el resto del sistema sigue funcionando.
+    // -------------------------------------------------------------------------
+    s_display_mutex = xSemaphoreCreateMutex();
+    if (s_display_mutex) {
+        s_display_frame = heap_caps_malloc(FRAME_SZ,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        if (!s_display_frame) {
+            ESP_LOGW(TAG, "sin PSRAM para display frame — monitor WiFi deshabilitado");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // 5. Semáforo de frame y buffer en PSRAM
     //    El semáforo sincroniza el ISR (csi_trans_finished_cb) con vision_task.
     //    El buffer debe asignarse antes de registrar los callbacks porque
@@ -497,4 +529,13 @@ obstacle_side_t vision_get_obstacle_side(void)
 bool vision_is_ready(void)
 {
     return s_ready;
+}
+
+bool vision_copy_display_frame(uint8_t *dst, size_t len)
+{
+    if (!dst || len < FRAME_SZ || !s_display_frame || !s_ready) return false;
+    if (xSemaphoreTake(s_display_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
+    memcpy(dst, s_display_frame, FRAME_SZ);
+    xSemaphoreGive(s_display_mutex);
+    return true;
 }

@@ -1,0 +1,11 @@
+menu "SENTIS Monitor (solo desarrollo)"
+
+    config MONITOR_ENABLED
+        bool "Habilitar monitor USB CDC"
+        default y
+        help
+            Transmite frames JPEG + zona detectada por USB CDC (puerto OTG
+            del ESP32-P4). Ver tools/monitor_viewer.py para el visualizador.
+            Deshabilitar en firmware de produccion.
+
+endmenu

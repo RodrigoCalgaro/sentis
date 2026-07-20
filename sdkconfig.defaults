@@ -91,3 +91,12 @@ CONFIG_CAMERA_OV5647_CSI_LINESYNC_ENABLE=y
 # ya que no necesitamos el controlador SPI para ningún sensor del proyecto.
 # -----------------------------------------------------------------------------
 CONFIG_CAM_CTRL_SPI_ENABLE=n
+
+# -----------------------------------------------------------------------------
+# Monitor USB CDC (solo desarrollo)
+#
+# Transmite frames JPEG de la cámara por el puerto USB OTG del ESP32-P4.
+# Ver tools/monitor_viewer.py para el visualizador en el PC.
+# -----------------------------------------------------------------------------
+CONFIG_MONITOR_ENABLED=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
