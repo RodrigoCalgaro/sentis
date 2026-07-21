@@ -1,5 +1,6 @@
 #include "vision.h"
 #include "board_config.h"
+#include "bus.h"
 #include "driver/i2c_master.h"
 #include "esp_sccb_i2c.h"
 #include "esp_cam_ctlr_csi.h"
@@ -205,11 +206,11 @@ static void vision_task(void *arg)
 //   6. Buffer de frame en PSRAM
 //   7. vision_task
 //
-// Nota I2C compartido:
-//   El bus I2C_NUM_0 (GPIO7/8) será requerido también por el codec ES8311
-//   en la Fase 2 (audio). Cuando eso suceda, el handle s_i2c_bus deberá
-//   moverse a un componente board compartido para evitar doble inicialización
-//   del mismo puerto I2C.
+// Bus I2C compartido con Fase 2:
+//   El bus I2C_NUM_0 (GPIO7/8) es gestionado por el componente bus (bus.h).
+//   Tanto vision_init() como audio_init() llaman a bus_i2c_init() que es
+//   idempotente — el periférico se crea una sola vez y ambos componentes
+//   agregan sus dispositivos (OV5647 @ 0x36, ES8311 @ 0x18) al mismo bus.
 // -----------------------------------------------------------------------------
 esp_err_t vision_init(void)
 {
@@ -274,21 +275,16 @@ esp_err_t vision_init(void)
     }
 
     // -------------------------------------------------------------------------
-    // 2. Bus I2C master
+    // 2. Bus I2C master (compartido con audio — componente bus)
+    //    bus_i2c_init() es idempotente: si audio_init() ya lo creó, reutiliza
+    //    el mismo handle sin re-inicializar el periférico.
     // -------------------------------------------------------------------------
-    const i2c_master_bus_config_t i2c_cfg = {
-        .i2c_port          = BOARD_I2C_NUM,
-        .sda_io_num        = BOARD_I2C_SDA_GPIO,
-        .scl_io_num        = BOARD_I2C_SCL_GPIO,
-        .clk_source        = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    ret = i2c_new_master_bus(&i2c_cfg, &s_i2c_bus);
+    ret = bus_i2c_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(ret));
         return ret;
     }
+    s_i2c_bus = bus_get_i2c();
 
     // -------------------------------------------------------------------------
     // 2. Handle SCCB sobre I2C

@@ -51,6 +51,6 @@ dependencies:
 direct_dependencies:
 - espressif/esp_cam_sensor
 - idf
-manifest_hash: 5e2d119839c3a697c81caded17f092c1203aacb8a7d51415059c9a919db747bd
+manifest_hash: 4f67a01c65beaed1bf2e3526fa6e7f016cc2bcd07e5a2d6d6f1ebdc6a2b01f26
 target: esp32p4
 version: 3.0.0

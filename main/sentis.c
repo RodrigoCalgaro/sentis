@@ -4,6 +4,8 @@
 #include "lidar.h"
 #include "vision.h"
 #include "monitor.h"
+#include "storage.h"
+#include "audio.h"
 
 // =============================================================================
 // Umbrales de proximidad — ajustar estos dos valores para calibrar las distancias
@@ -111,34 +113,49 @@ static void proximity_task(void *arg)
 // -----------------------------------------------------------------------------
 // app_main — punto de entrada del firmware SENTIS.
 //
-// Inicializa los tres subsistemas de hardware (motores, LiDAR y cámara) y lanza
-// la tarea de proximidad que los coordina en tiempo real. Cada subsistema corre
-// su propio proceso interno en FreeRTOS, por lo que app_main puede retornar una
-// vez terminada la configuración.
-//
 // Orden de inicialización:
-//   1. haptic_init  — LEDC PWM, sin dependencias externas
-//   2. lidar_init   — UART1, sin dependencias externas
-//   3. vision_init  — I2C + MIPI CSI-2; puede tardar más si el sensor realiza
-//                     su secuencia de arranque. Un error aquí es no fatal: el
-//                     sistema continúa operando con fallback LiDAR-only porque
-//                     vision_is_ready() retorna false hasta el primer frame.
-//   4. proximity_task — fusiona los datos de los tres anteriores
+//   1. haptic_init   — LEDC PWM, sin dependencias externas
+//   2. lidar_init    — UART1, sin dependencias externas
+//   3. storage_init  — SDMMC 4-bit → FAT VFS en /sdcard (Fase 2)
+//   4. audio_init    — ES8311 + I2S0 + NS4150B (Fase 2)
+//                      Crea el bus I2C compartido internamente.
+//   5. vision_init   — I2C + MIPI CSI-2 (usa el bus I2C ya creado por audio)
+//                      No fatal: proximity_task opera en modo LiDAR-only si falla.
+//   6. monitor_init  — transmisión WiFi de frames para desarrollo
+//   7. proximity_task — fusiona LiDAR + visión + háptica
+//
+// Prueba de audio (Fase 2):
+//   Colocar en la microSD un archivo "/sdcard/alert.wav"
+//   con formato: 16000 Hz, 16-bit PCM, mono o estéreo.
+//   Comando ffmpeg para convertir:
+//     ffmpeg -i input.mp3 -ar 16000 -ac 1 -acodec pcm_s16le alert.wav
 // -----------------------------------------------------------------------------
 void app_main(void)
 {
     haptic_init();
     lidar_init();
 
+    // ---- Fase 2: almacenamiento y audio ----
+    // storage e audio se inicializan de forma independiente:
+    // el codec y el parlante funcionan aunque no haya SD insertada.
+    storage_init();   // no fatal — logs error si no hay tarjeta
+    audio_init();     // no fatal — ES8311 + I2S + PA, sin depender de SD
+
+    // Prueba de arranque: reproducir alert.wav si existe en la SD.
+    // Retirar esta línea una vez confirmado el funcionamiento completo.
+    if (storage_is_mounted()) {
+        audio_play_wav("/sdcard/alert.wav");
+    }
+
     // La cámara puede fallar si el cable CSI no está conectado o el sensor no
     // responde. En ese caso vision_is_ready() nunca retorna true y proximity_task
-    // opera en modo fallback (solo LiDAR, ambos motores), preservando el
-    // comportamiento original de las fases anteriores.
+    // opera en modo fallback (solo LiDAR, ambos motores).
     vision_init();
 
     // Monitor WiFi solo para desarrollo (ver menuconfig → SENTIS Monitor).
-    // No fatal si falla (WiFi no configurado o AP inalcanzable).
-    monitor_init();
+    // Deshabilitado por defecto: comparte UART0 con el console y genera
+    // datos binarios JPEG que contaminan los logs. Habilitar via menuconfig.
+    // monitor_init();
 
     xTaskCreate(proximity_task, "proximity", 2048, NULL, 5, NULL);
 }

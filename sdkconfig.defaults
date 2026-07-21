@@ -97,6 +97,9 @@ CONFIG_CAM_CTRL_SPI_ENABLE=n
 #
 # Transmite frames JPEG de la cámara por el puerto USB OTG del ESP32-P4.
 # Ver tools/monitor_viewer.py para el visualizador en el PC.
+# DESHABILITADO por defecto: comparte UART0 con el console de IDF, lo que
+# mezcla datos binarios JPEG con los logs de texto. Habilitar solo cuando
+# se necesite el visualizador: idf.py menuconfig → SENTIS Monitor → Enable.
 # -----------------------------------------------------------------------------
-CONFIG_MONITOR_ENABLED=y
+CONFIG_MONITOR_ENABLED=n
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600

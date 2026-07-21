@@ -38,6 +38,11 @@
 
 // Phase 2 — MicroSD (onboard SDMMC 4-bit, SDIO 3.0)
 // All pins are internal — no external wiring needed.
+// BOARD_SD_LDO_CHAN_ID: el ESP32-P4 usa el LDO interno #4 para alimentar las
+// IOs del slot SDMMC (SOC_SDMMC_IO_POWER_EXTERNAL=y). Sin inicializarlo,
+// las líneas CMD/CLK/D0-D3 no tienen tensión y el card no responde.
+// Fuente: ejemplo oficial Waveshare 09_sdmmc, Kconfig.projbuild ESP32-P4 default.
+#define BOARD_SD_LDO_CHAN_ID      4
 #define BOARD_SD_CLK_GPIO         43
 #define BOARD_SD_CMD_GPIO         44
 #define BOARD_SD_D0_GPIO          39

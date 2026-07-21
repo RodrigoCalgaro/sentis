@@ -1,0 +1,7 @@
+## IDF Component Manager Manifest — componente audio
+## Sin dependencias externas: el codec ES8311 se inicializa directamente
+## via i2c_master.h (nuevo driver) con la secuencia de registros extraída
+## del componente oficial espressif/es8311 v1.0.0.
+
+dependencies:
+  idf: ">=5.3"
