@@ -41,21 +41,22 @@ esp_err_t stt_init(stt_result_cb_t result_cb)
     s_result_cb = result_cb;
 
     // -------------------------------------------------------------------------
-    // Cargar lista de modelos desde la partición "model" del flash.
-    // Si la partición no existe o está vacía, retorna NULL.
+    // Cargar lista de modelos desde la microSD (/sdcard/sr_model/).
+    // Requiere que storage_init() haya completado antes de llamar a stt_init().
+    // Si la tarjeta no está insertada o el directorio no existe, retorna NULL.
     // -------------------------------------------------------------------------
-    s_models = esp_srmodel_init("model");
+    s_models = esp_srmodel_init("/sdcard/sr_model");
     if (s_models == NULL) {
         ESP_LOGE(TAG, "esp_srmodel_init failed — "
-                      "verificar que la particion 'model' existe y que "
-                      "idf.py flash se ejecuto para volcar los modelos");
+                      "verificar que la SD esta insertada y que "
+                      "/sdcard/sr_model/mn7_en/ y /sdcard/sr_model/fst/ existen");
         return ESP_FAIL;
     }
 
     // -------------------------------------------------------------------------
-    // MultiNet — reconocimiento de comandos en inglés.
+    // MultiNet — reconocimiento de comandos en inglés (mn7_en).
     // esp_srmodel_filter busca el primer modelo cuyo nombre comienza con
-    // ESP_MN_PREFIX (generalmente "mn6q8_en") dentro de la lista.
+    // ESP_MN_PREFIX dentro del directorio cargado.
     // -------------------------------------------------------------------------
     char *mn_name = esp_srmodel_filter(s_models, ESP_MN_PREFIX, "en");
     if (mn_name == NULL) {
