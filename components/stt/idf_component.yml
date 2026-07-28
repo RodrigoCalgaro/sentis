@@ -1,0 +1,4 @@
+## IDF Component Manager — dependencias del componente stt
+dependencies:
+  espressif/esp-sr:
+    version: ">=1.0.0"

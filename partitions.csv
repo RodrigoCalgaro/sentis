@@ -1,0 +1,18 @@
+# SENTIS — tabla de particiones personalizada (ESP32-P4, 16MB flash)
+#
+# Offset 0x2000: bootloader (fijo, manejado por IDF)
+# Offset 0x8000: esta tabla (CONFIG_PARTITION_TABLE_OFFSET=0x8000)
+#
+# Cambios respecto al default single-app:
+#   - factory extendida a 3 MB (firmware con ESP-SR linkado)
+#   - partición "model" de 5 MB para los modelos de espressif/esp-sr
+#     (WakeNet9 ~400KB + MultiNet6-EN compact ~4MB)
+#
+# Para flashear los modelos después de compilar:
+#   idf.py flash           (flashea firmware + modelos en un solo paso)
+#
+# Name,     Type, SubType, Offset,    Size
+nvs,        data, nvs,     0x9000,    0x6000
+phy_init,   data, phy,     0xf000,    0x1000
+factory,    app,  factory, 0x10000,   0x300000
+model,      data, spiffs,  0x310000,  0x500000

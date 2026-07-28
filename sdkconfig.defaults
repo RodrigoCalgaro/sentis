@@ -103,3 +103,40 @@ CONFIG_CAM_CTRL_SPI_ENABLE=n
 # -----------------------------------------------------------------------------
 CONFIG_MONITOR_ENABLED=n
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+
+# -----------------------------------------------------------------------------
+# Flash size — ESP32-P4-Module-DEV-KIT v1.3
+#
+# El módulo tiene 16 MB de flash. El IDF por defecto genera 2 MB (configuración
+# conservadora); hay que sobreescribirlo explícitamente aquí.
+# Sin este override, la partición "model" (ESP-SR, 5 MB) no entra en la imagen.
+#
+# Si el sdkconfig existente ya dice 2MB, borrar sdkconfig y reconstruir:
+#   del sdkconfig && idf.py set-target esp32p4
+# -----------------------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# -----------------------------------------------------------------------------
+# Tabla de particiones personalizada — partitions.csv
+#
+# Incluye partición "model" de 5 MB para los modelos de espressif/esp-sr.
+# Sin esta partición, esp_srmodel_init("model") devuelve NULL en boot.
+# -----------------------------------------------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# -----------------------------------------------------------------------------
+# ESP-SR — modelos de reconocimiento de voz
+#
+# MODEL_IN_FLASH: los modelos viven en la partición "model" (partitions.csv).
+# SR_MN_EN_MULTINET6_QUANT: MultiNet6 inglés cuantizado (~3.5 MB en flash).
+#   Alternativa más compacta si ajusta mejor: SR_MN_EN_MULTINET5_SINGLE_RECOGNITION_QUANT8 (~2.5 MB).
+# SR_WN_WN9_HIESP: wake word "Hi ESP!" (opcional, habilita activación por voz).
+#   Cambiar a SR_WN_WN9_HILEXIN para usar "Hi Lexin" como wake word.
+#
+# Después de cambiar estos valores regenerar sdkconfig y reflaschear:
+#   del sdkconfig && idf.py set-target esp32p4 && idf.py flash
+# -----------------------------------------------------------------------------
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_SR_MN_EN_MULTINET7_QUANT=y

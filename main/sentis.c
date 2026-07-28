@@ -1,11 +1,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_log.h"
 #include "haptics.h"
 #include "lidar.h"
 #include "vision.h"
 #include "monitor.h"
 #include "storage.h"
 #include "audio.h"
+#include "mic.h"
+#include "stt.h"
 
 // =============================================================================
 // Umbrales de proximidad — ajustar estos dos valores para calibrar las distancias
@@ -33,6 +36,28 @@
 // La cámara corre en segundo plano a 15 fps (~67 ms por frame), por lo que en
 // cada evaluación se lee el resultado del último frame analizado sin bloquear.
 #define PROXIMITY_POLL_MS   50
+
+// -----------------------------------------------------------------------------
+// on_stt_result — callback invocada por el componente stt cuando se reconoce
+// un comando de voz.
+//
+// Responsabilidades:
+//   1. Log en consola (siempre visible en idf.py monitor).
+//   2. Publicar en el monitor viewer para overlay visual (si está habilitado).
+//
+// Nota: esta función se llama desde mic_task (prioridad 6), directamente
+// dentro del loop de alimentación de ESP-SR — no bloquear aquí.
+// -----------------------------------------------------------------------------
+static void on_stt_result(const stt_result_t *result)
+{
+    // El log aparece en el monitor serie aunque el viewer gráfico esté apagado.
+    // Formato consistente con el resto de los logs del proyecto.
+    // Nivel INFO para que sea visible en builds de producción.
+    ESP_LOGI("stt", "COMANDO: [%d] \"%s\"", result->command_id, result->text);
+
+    // Publicar al viewer gráfico (no-op si CONFIG_MONITOR_ENABLED=n).
+    monitor_set_stt_text(result->text);
+}
 
 // -----------------------------------------------------------------------------
 // proximity_task — lee distancia del LiDAR, consulta posición de la cámara y
@@ -117,18 +142,17 @@ static void proximity_task(void *arg)
 //   1. haptic_init   — LEDC PWM, sin dependencias externas
 //   2. lidar_init    — UART1, sin dependencias externas
 //   3. storage_init  — SDMMC 4-bit → FAT VFS en /sdcard (Fase 2)
-//   4. audio_init    — ES8311 + I2S0 + NS4150B (Fase 2)
-//                      Crea el bus I2C compartido internamente.
-//   5. vision_init   — I2C + MIPI CSI-2 (usa el bus I2C ya creado por audio)
-//                      No fatal: proximity_task opera en modo LiDAR-only si falla.
-//   6. monitor_init  — transmisión WiFi de frames para desarrollo
-//   7. proximity_task — fusiona LiDAR + visión + háptica
+//   4. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
+//                      Abre TX (playback) y RX (micrófono) en el mismo I2S0.
+//   5. stt_init      — carga modelos ESP-SR desde partición "model" (Fase 4)
+//   6. mic_init      — tarea de captura: ES8311 ADC → chunks mono → stt_feed()
+//   7. vision_init   — I2C + MIPI CSI-2 (Fase 5)
+//   8. monitor_init  — transmisión de frames para desarrollo (Fase 5)
+//   9. proximity_task — fusiona LiDAR + visión + háptica
 //
-// Prueba de audio (Fase 2):
-//   Colocar en la microSD un archivo "/sdcard/alert.wav"
-//   con formato: 16000 Hz, 16-bit PCM, mono o estéreo.
-//   Comando ffmpeg para convertir:
-//     ffmpeg -i input.mp3 -ar 16000 -ac 1 -acodec pcm_s16le alert.wav
+// Nota Fase 4: stt_init() necesita que los modelos estén en la partición "model"
+// (partitions.csv). Tras un build limpio ejecutar:
+//   del sdkconfig && idf.py set-target esp32p4 && idf.py flash
 // -----------------------------------------------------------------------------
 void app_main(void)
 {
@@ -136,25 +160,27 @@ void app_main(void)
     lidar_init();
 
     // ---- Fase 2: almacenamiento y audio ----
-    // storage e audio se inicializan de forma independiente:
-    // el codec y el parlante funcionan aunque no haya SD insertada.
     storage_init();   // no fatal — logs error si no hay tarjeta
-    audio_init();     // no fatal — ES8311 + I2S + PA, sin depender de SD
+    audio_init();     // ES8311 + I2S0 full-duplex (TX playback + RX mic)
 
-    // Prueba de arranque: reproducir alert.wav si existe en la SD.
-    // Retirar esta línea una vez confirmado el funcionamiento completo.
     if (storage_is_mounted()) {
         audio_play_wav("/sdcard/alert.wav");
     }
 
-    // La cámara puede fallar si el cable CSI no está conectado o el sensor no
-    // responde. En ese caso vision_is_ready() nunca retorna true y proximity_task
-    // opera en modo fallback (solo LiDAR, ambos motores).
+    // ---- Fase 4: reconocimiento de voz (STT local via ESP-SR) ----
+    // stt_init carga los modelos MultiNet desde la partición "model".
+    // No fatal: si la partición no existe o está vacía, se loguea el error
+    // y el sistema sigue operando sin STT.
+    if (stt_init(on_stt_result) == ESP_OK) {
+        // mic_init arranca la tarea de captura: I2S0 RX → downmix → stt_feed()
+        // La tarea alimenta ESP-SR sincrónicamente — sin latencia adicional.
+        mic_init(stt_feed);
+    }
+
+    // ---- Fase 5: cámara ----
     vision_init();
 
-    // Monitor WiFi solo para desarrollo (ver menuconfig → SENTIS Monitor).
-    // Deshabilitado por defecto: comparte UART0 con el console y genera
-    // datos binarios JPEG que contaminan los logs. Habilitar via menuconfig.
+    // Monitor visual solo para desarrollo (menuconfig → SENTIS Monitor).
     // monitor_init();
 
     xTaskCreate(proximity_task, "proximity", 2048, NULL, 5, NULL);

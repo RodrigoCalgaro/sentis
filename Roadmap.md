@@ -40,10 +40,23 @@
 
 ---
 
-## ⏳ Fase 4: La Escucha Activa (Micrófono I2S) — PENDIENTE
+## 🔄 Fase 4: La Escucha Activa (Micrófono + STT) — EN PROGRESO
 
-*   **Paso 4.1:** Configurar el micrófono INMP441 via I2S. Nota: I2S0 ya está usado por el codec de audio → usar **I2S1** para el micrófono.
-*   **Paso 4.2:** Grabar muestra de voz directamente a la microSD (validación de calidad de audio).
+*   **✅ Paso 4.1:** ES8311 ADC habilitado vía I2S0 RX (full-duplex). El codec onboard tiene el micrófono MEMS en su entrada analógica. No se requiere hardware adicional — GPIO11 (ASDOUT) ya estaba wired. `audio_init()` ahora abre TX+RX en el mismo `i2s_new_channel()`.
+*   **✅ Paso 4.2 (arquitectura):** Componente `mic` — tarea FreeRTOS que lee estéreo de I2S0 RX, hace downmix L+R → mono y entrega chunks de 480 muestras @ 16 kHz al componente STT.
+*   **✅ Paso 4.3 (arquitectura):** Componente `stt` — wrapper de `espressif/esp-sr` (MultiNet). Reconoce 5 comandos en inglés on-device sin WiFi: `stop`, `turn left`, `turn right`, `alert on`, `help`. Callback `on_stt_result()` loguea en consola y publica al monitor viewer.
+*   **⏳ Paso 4.4 — PENDIENTE (primera compilación):** Regenerar sdkconfig y flashear con la nueva partición `model`:
+    ```
+    del sdkconfig
+    idf.py set-target esp32p4
+    idf.py flash
+    ```
+*   **⏳ Paso 4.5 — PENDIENTE (validación):** Verificar calidad del audio ADC. Si hay ruido excesivo, ajustar ganancia ADC del ES8311 (registros 0x14/0x17 en `audio.c`).
+
+**Quirks de implementación:**
+- I2S full-duplex: TX se inicializa con todos los GPIO (MCLK, BCLK, WS, DOUT); RX solo con DIN=GPIO11 y el resto `I2S_GPIO_UNUSED` para no reasignar los pines del master.
+- Flash: el sdkconfig default dice 2 MB (IDF default conservador). El módulo tiene 16 MB reales — `sdkconfig.defaults` ahora sobreescribe a 16 MB + `partitions.csv` custom con partición `model` de 5 MB.
+- ESP-SR: `esp_srmodel_init("model")` carga los modelos desde la partición flash. Requiere `idf.py flash` después de cambiar la tabla de particiones.
 
 ---
 

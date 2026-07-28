@@ -48,6 +48,7 @@ static const char *TAG = "audio";
 // =============================================================================
 
 static i2s_chan_handle_t        s_tx     = NULL;
+static i2s_chan_handle_t        s_rx     = NULL;   // ES8311 ADC → ESP (microphone path)
 static i2c_master_dev_handle_t  s_es8311 = NULL;
 static bool                     s_initialized = false;
 
@@ -125,15 +126,22 @@ esp_err_t audio_init(void)
     //    Si el codec se configura antes de que I2S esté corriendo, el PLL
     //    no puede hacer lock y no hay señal de audio.
     // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // I2S0 full-duplex: abrimos TX (playback) y RX (mic/ADC) juntos.
+    // Ambos canales comparten MCLK/BCLK/LRCK; cada uno tiene su propio pin de datos.
+    // El TX recibe &s_tx y &s_rx en un solo i2s_new_channel — el driver asigna
+    // el mismo periférico I2S a ambos handles para habilitar full-duplex.
+    // -------------------------------------------------------------------------
     i2s_chan_config_t chan_cfg =
         I2S_CHANNEL_DEFAULT_CONFIG(BOARD_I2S_NUM, I2S_ROLE_MASTER);
-    ret = i2s_new_channel(&chan_cfg, &s_tx, NULL);
+    ret = i2s_new_channel(&chan_cfg, &s_tx, &s_rx);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    const i2s_std_config_t std_cfg = {
+    // TX channel: todos los pines; din=unused (el master TX no necesita capturar)
+    const i2s_std_config_t tx_cfg = {
         .clk_cfg = {
             .sample_rate_hz = AUDIO_SAMPLE_RATE,
             .clk_src        = I2S_CLK_SRC_DEFAULT,
@@ -145,20 +153,46 @@ esp_err_t audio_init(void)
             .mclk = BOARD_I2S_MCLK_GPIO,    // GPIO13
             .bclk = BOARD_I2S_SCLK_GPIO,    // GPIO12
             .ws   = BOARD_I2S_LRCK_GPIO,    // GPIO10
-            .dout = BOARD_I2S_DSDIN_GPIO,   // GPIO9  → ES8311 data in
-            .din  = BOARD_I2S_ASDOUT_GPIO,  // GPIO11 ← ES8311 data out
+            .dout = BOARD_I2S_DSDIN_GPIO,   // GPIO9  → ES8311 data in (playback)
+            .din  = I2S_GPIO_UNUSED,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
-    ret = i2s_channel_init_std_mode(s_tx, &std_cfg);
+    ret = i2s_channel_init_std_mode(s_tx, &tx_cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_channel_init_std_mode failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "i2s_channel_init_std_mode TX failed: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    // RX channel: sólo el pin de datos; MCLK/BCLK/WS ya los configuró TX arriba.
+    const i2s_std_config_t rx_cfg = {
+        .clk_cfg = {
+            .sample_rate_hz = AUDIO_SAMPLE_RATE,
+            .clk_src        = I2S_CLK_SRC_DEFAULT,
+            .mclk_multiple  = I2S_MCLK_MULTIPLE_256,
+        },
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+                        I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = I2S_GPIO_UNUSED,
+            .ws   = I2S_GPIO_UNUSED,
+            .dout = I2S_GPIO_UNUSED,
+            .din  = BOARD_I2S_ASDOUT_GPIO,  // GPIO11 ← ES8311 ADC out (mic)
+            .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
+        },
+    };
+    ret = i2s_channel_init_std_mode(s_rx, &rx_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_channel_init_std_mode RX failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
-    ESP_LOGI(TAG, "I2S%d running — MCLK=GPIO%d %uHz×256=%uHz",
+    ESP_ERROR_CHECK(i2s_channel_enable(s_rx));
+    ESP_LOGI(TAG, "I2S%d full-duplex — MCLK=GPIO%d %uHz×256=%uHz  RX=GPIO%d",
              BOARD_I2S_NUM, BOARD_I2S_MCLK_GPIO,
-             AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_RATE * 256);
+             AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_RATE * 256, BOARD_I2S_ASDOUT_GPIO);
 
     // -------------------------------------------------------------------------
     // 2. ES8311 — bus I2C compartido (nueva API i2c_master.h)
@@ -428,4 +462,25 @@ void audio_mute(bool mute)
 {
     if (!s_initialized) return;
     gpio_set_level(BOARD_PA_CTRL_GPIO, mute ? 0 : 1);
+}
+
+// =============================================================================
+// audio_read_pcm_stereo — lee muestras del canal RX (ES8311 ADC / micrófono).
+//
+// buf            : destino, debe tener capacidad para `stereo_samples` int16_t.
+// stereo_samples : cantidad de muestras entrelazadas L/R a leer.
+//                  Cada par [L, R] constituye un frame estéreo.
+//                  Para ESP-SR (mono 480 samples), pasar 960 aquí y luego
+//                  extraer un canal en el componente mic.
+// timeout_ticks  : timeout en ticks FreeRTOS (portMAX_DELAY = bloquear).
+// =============================================================================
+esp_err_t audio_read_pcm_stereo(int16_t *buf, size_t stereo_samples, TickType_t timeout_ticks)
+{
+    if (!s_initialized || s_rx == NULL) return ESP_ERR_INVALID_STATE;
+
+    size_t bytes_read = 0;
+    esp_err_t ret = i2s_channel_read(s_rx, buf,
+                                     stereo_samples * sizeof(int16_t),
+                                     &bytes_read, timeout_ticks);
+    return ret;
 }

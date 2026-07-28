@@ -10,11 +10,14 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <inttypes.h>
+#include <string.h>
 
 #define TAG "monitor"
 
 #define JPEG_OUT_SIZE     (200 * 1024)
+#define STT_TEXT_MAX      64
 
 // A 921600 baud (~92 KB/s útiles) y quality=30:
 //   JPEG 800×640 gray ≈ 15–25 KB → tiempo transmisión ≈ 160–270 ms
@@ -22,21 +25,43 @@
 #define FRAME_INTERVAL_MS  1000
 
 // =============================================================================
-// Protocolo de framing — igual que antes, documentado en tools/monitor_viewer.py
+// Protocolo de framing — dos tipos de paquete:
+//
+//   Tipo JPEG (camera frame):
+//     [4]  magic: AB CD EF 01
+//     [4]  tamano JPEG en bytes (uint32 LE)
+//     [1]  zona: 0=NONE 1=LEFT 2=CENTER 3=RIGHT
+//     [1]  pad
+//     [N]  datos JPEG
+//
+//   Tipo TEXT (STT result):
+//     [4]  magic: AB CD EF 02
+//     [4]  longitud del texto (uint32 LE, incluyendo NUL terminal)
+//     [1]  pad
+//     [1]  pad
+//     [N]  texto UTF-8 terminado en NUL
+//
+// Ver tools/monitor_viewer.py para el parser en Python.
 // =============================================================================
-static const uint8_t MAGIC[4] = {0xAB, 0xCD, 0xEF, 0x01};
+static const uint8_t MAGIC_JPEG[4] = {0xAB, 0xCD, 0xEF, 0x01};
+static const uint8_t MAGIC_TEXT[4] = {0xAB, 0xCD, 0xEF, 0x02};
 
 static jpeg_encoder_handle_t  s_enc        = NULL;
 static uint8_t               *s_frame_copy = NULL;
 static uint8_t               *s_jpeg_out   = NULL;
 
+// Último texto STT recibido, protegido por mutex ligero.
+static SemaphoreHandle_t s_stt_mutex  = NULL;
+static char              s_stt_text[STT_TEXT_MAX] = {0};
+static bool              s_stt_dirty = false;  // hay texto nuevo no enviado aún
+
 // uart_write_bytes() escribe al FIFO del UART sin conversión de saltos de línea,
 // por lo que es binary-safe para los datos JPEG.
-static void send_frame(uint32_t jpeg_size, uint8_t zone)
+static void send_jpeg_frame(uint32_t jpeg_size, uint8_t zone)
 {
     uint8_t hdr[10];
-    hdr[0] = MAGIC[0]; hdr[1] = MAGIC[1];
-    hdr[2] = MAGIC[2]; hdr[3] = MAGIC[3];
+    hdr[0] = MAGIC_JPEG[0]; hdr[1] = MAGIC_JPEG[1];
+    hdr[2] = MAGIC_JPEG[2]; hdr[3] = MAGIC_JPEG[3];
     hdr[4] = (jpeg_size >>  0) & 0xFF;
     hdr[5] = (jpeg_size >>  8) & 0xFF;
     hdr[6] = (jpeg_size >> 16) & 0xFF;
@@ -46,6 +71,23 @@ static void send_frame(uint32_t jpeg_size, uint8_t zone)
 
     uart_write_bytes(UART_NUM_0, hdr, sizeof(hdr));
     uart_write_bytes(UART_NUM_0, s_jpeg_out, (int)jpeg_size);
+}
+
+static void send_text_frame(const char *text)
+{
+    uint32_t len = (uint32_t)(strlen(text) + 1);  // incluye NUL
+    uint8_t hdr[10];
+    hdr[0] = MAGIC_TEXT[0]; hdr[1] = MAGIC_TEXT[1];
+    hdr[2] = MAGIC_TEXT[2]; hdr[3] = MAGIC_TEXT[3];
+    hdr[4] = (len >>  0) & 0xFF;
+    hdr[5] = (len >>  8) & 0xFF;
+    hdr[6] = (len >> 16) & 0xFF;
+    hdr[7] = (len >> 24) & 0xFF;
+    hdr[8] = 0;
+    hdr[9] = 0;
+
+    uart_write_bytes(UART_NUM_0, hdr, sizeof(hdr));
+    uart_write_bytes(UART_NUM_0, text, (int)len);
 }
 
 static void monitor_task(void *arg)
@@ -80,13 +122,24 @@ static void monitor_task(void *arg)
         }
 
         ESP_LOGD(TAG, "%"PRIu32" bytes zona=%d", out_size, (int)vision_get_obstacle_side());
-        send_frame(out_size, (uint8_t)vision_get_obstacle_side());
+        send_jpeg_frame(out_size, (uint8_t)vision_get_obstacle_side());
+
+        // Enviar texto STT si hay uno nuevo pendiente.
+        if (xSemaphoreTake(s_stt_mutex, 0) == pdTRUE) {
+            if (s_stt_dirty) {
+                send_text_frame(s_stt_text);
+                s_stt_dirty = false;
+            }
+            xSemaphoreGive(s_stt_mutex);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(FRAME_INTERVAL_MS));
     }
 }
 
 esp_err_t monitor_init(void)
 {
+    s_stt_mutex  = xSemaphoreCreateMutex();
     s_frame_copy = heap_caps_malloc(VISION_FRAME_SZ,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
     s_jpeg_out   = heap_caps_malloc(JPEG_OUT_SIZE,
@@ -116,8 +169,20 @@ esp_err_t monitor_init(void)
     return ESP_OK;
 }
 
+void monitor_set_stt_text(const char *text)
+{
+    if (text == NULL || s_stt_mutex == NULL) return;
+    if (xSemaphoreTake(s_stt_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        strncpy(s_stt_text, text, STT_TEXT_MAX - 1);
+        s_stt_text[STT_TEXT_MAX - 1] = '\0';
+        s_stt_dirty = true;
+        xSemaphoreGive(s_stt_mutex);
+    }
+}
+
 #else
 
-esp_err_t monitor_init(void) { return ESP_OK; }
+esp_err_t monitor_init(void)       { return ESP_OK; }
+void      monitor_set_stt_text(const char *text) { (void)text; }
 
 #endif  // CONFIG_MONITOR_ENABLED

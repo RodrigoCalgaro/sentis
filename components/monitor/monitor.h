@@ -15,3 +15,9 @@
 // Requiere CONFIG_MONITOR_ENABLED=y (menuconfig → SENTIS Monitor).
 // Si el flag está desactivado, retorna ESP_OK inmediatamente sin hacer nada.
 esp_err_t monitor_init(void);
+
+// Publica el último texto STT reconocido para que el viewer lo muestre como overlay.
+// text: cadena UTF-8 terminada en NUL (se trunca a 63 caracteres internamente).
+// Thread-safe: puede llamarse desde cualquier tarea.
+// No-op si CONFIG_MONITOR_ENABLED=n.
+void monitor_set_stt_text(const char *text);
