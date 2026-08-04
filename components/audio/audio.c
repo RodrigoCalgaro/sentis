@@ -134,6 +134,11 @@ esp_err_t audio_init(void)
     // -------------------------------------------------------------------------
     i2s_chan_config_t chan_cfg =
         I2S_CHANNEL_DEFAULT_CONFIG(BOARD_I2S_NUM, I2S_ROLE_MASTER);
+    // auto_clear: sin esto, cuando i2s_channel_write() deja de alimentar datos
+    // (fin de una reproducción), el DMA de TX repite en loop infinito el último
+    // buffer transmitido en vez de emitir silencio — causaba que la última sílaba
+    // de cada frase TTS quedara sonando en bucle indefinidamente.
+    chan_cfg.auto_clear = true;
     ret = i2s_new_channel(&chan_cfg, &s_tx, &s_rx);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(ret));
@@ -332,13 +337,6 @@ esp_err_t audio_init(void)
     ESP_LOGI(TAG, "initialized — I2S%d %uHz 16-bit stereo, PA GPIO%d ON",
              BOARD_I2S_NUM, AUDIO_SAMPLE_RATE, BOARD_PA_CTRL_GPIO);
 
-    // -------------------------------------------------------------------------
-    // 5. Tono de diagnóstico — cuadrado 440 Hz × 400 ms
-    //    Si se escucha: el chain ES8311 → NS4150B → parlante funciona.
-    //    Remover esta llamada una vez confirmado el funcionamiento.
-    // -------------------------------------------------------------------------
-    audio_test_tone();
-
     return ESP_OK;
 }
 
@@ -452,6 +450,37 @@ esp_err_t audio_play_wav(const char *path)
 
     fclose(f);
     ESP_LOGI(TAG, "playback done: %s", path);
+    return ESP_OK;
+}
+
+// =============================================================================
+// audio_play_pcm — reproduce PCM mono 16-bit desde un buffer en memoria.
+//
+// Cada muestra mono se duplica a estéreo antes de escribir al I2S TX,
+// igual que hace audio_play_wav() con archivos mono.
+// Bloqueante — retorna cuando todos los datos fueron escritos al DMA.
+// =============================================================================
+esp_err_t audio_play_pcm(const int16_t *samples, size_t count)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    if (!samples || count == 0) return ESP_OK;
+
+    // Procesar en bloques de hasta WAV_READ_BUF_SIZE/2 muestras mono.
+    // s_stereo_buf tiene WAV_READ_BUF_SIZE int16 → alcanza para 2048 muestras estéreo
+    // → 1024 muestras mono por pasada (cada mono genera 2 int16 estéreo).
+    const size_t MONO_PER_PASS = WAV_READ_BUF_SIZE / 4; // 1024
+
+    size_t offset = 0;
+    while (offset < count) {
+        size_t n = (count - offset) < MONO_PER_PASS ? (count - offset) : MONO_PER_PASS;
+        for (size_t i = 0; i < n; i++) {
+            s_stereo_buf[i * 2]     = samples[offset + i];
+            s_stereo_buf[i * 2 + 1] = samples[offset + i];
+        }
+        size_t written;
+        i2s_channel_write(s_tx, s_stereo_buf, n * 4, &written, pdMS_TO_TICKS(2000));
+        offset += n;
+    }
     return ESP_OK;
 }
 

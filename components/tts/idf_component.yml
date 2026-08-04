@@ -1,0 +1,4 @@
+## IDF Component Manager — componente TTS (síntesis de voz en español)
+dependencies:
+  idf:
+    version: ">=5.0.0"

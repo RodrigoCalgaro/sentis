@@ -9,6 +9,7 @@
 #include "audio.h"
 #include "mic.h"
 #include "stt.h"
+#include "tts.h"
 
 // =============================================================================
 // Umbrales de proximidad — ajustar estos dos valores para calibrar las distancias
@@ -144,11 +145,13 @@ static void proximity_task(void *arg)
 //   3. storage_init  — SDMMC 4-bit → FAT VFS en /sdcard (Fase 2)
 //   4. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
 //                      Abre TX (playback) y RX (micrófono) en el mismo I2S0.
-//   5. stt_init      — carga modelos ESP-SR desde partición "model" (Fase 4)
-//   6. mic_init      — tarea de captura: ES8311 ADC → chunks mono → stt_feed()
-//   7. vision_init   — I2C + MIPI CSI-2 (Fase 5)
-//   8. monitor_init  — transmisión de frames para desarrollo (Fase 5)
-//   9. proximity_task — fusiona LiDAR + visión + háptica
+//   5. tts_init      — carga voz eSpeak-NG desde SD (Fase 6A)
+//                      Reproduce "Sentis Encendido" como confirmación de arranque.
+//   6. stt_init      — carga modelos ESP-SR desde SD (Fase 4)
+//   7. mic_init      — tarea de captura: ES8311 ADC → chunks mono → stt_feed()
+//   8. vision_init   — I2C + MIPI CSI-2 (Fase 5)
+//   9. monitor_init  — transmisión de frames para desarrollo (Fase 5)
+//  10. proximity_task — fusiona LiDAR + visión + háptica
 //
 // Nota Fase 4: stt_init() necesita que los modelos estén en la partición "model"
 // (partitions.csv). Tras un build limpio ejecutar:
@@ -165,6 +168,16 @@ void app_main(void)
 
     if (storage_is_mounted()) {
         audio_play_wav("/sdcard/alert.wav");
+    }
+
+    // ---- Fase 6A: TTS en español (eSpeak-NG desde SD) ----
+    // tts_init carga los datos de voz desde /sdcard/espeak-ng-data/.
+    // No fatal: si los archivos no están en la SD, se loguea el error
+    // y el sistema sigue operando sin TTS.
+    if (storage_is_mounted()) {
+        if (tts_init("/sdcard/espeak-ng-data") == ESP_OK) {
+            tts_speak("Sentis Encendido");
+        }
     }
 
     // ---- Fase 4: reconocimiento de voz (STT local via ESP-SR) ----

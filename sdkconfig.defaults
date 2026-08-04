@@ -140,3 +140,13 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # -----------------------------------------------------------------------------
 CONFIG_MODEL_IN_SDCARD=y
 CONFIG_SR_MN_EN_MULTINET7_QUANT=y
+
+# -----------------------------------------------------------------------------
+# Main task stack
+#
+# El default de ESP-IDF es 3584 bytes.  eSpeak-NG (TranslateClause +
+# MakePhonemeList) necesita >39 KB de stack, pero tts_speak() crea una tarea
+# temporal de 64 KB solo durante la síntesis y la destruye al terminar.
+# 16 KB es suficiente para app_main() con todas las llamadas de init.
+# -----------------------------------------------------------------------------
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384

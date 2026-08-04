@@ -53,6 +53,12 @@ void audio_test_tone(void);
 // Immediately silence the amplifier output (PA enable pin, not codec volume).
 void audio_mute(bool mute);
 
+// Play mono 16-bit PCM samples already in memory.
+// samples : int16_t array, mono, at AUDIO_SAMPLE_RATE Hz.
+// count   : number of mono samples.
+// Internally duplicated to stereo and written to I2S TX. Blocking.
+esp_err_t audio_play_pcm(const int16_t *samples, size_t count);
+
 // Read raw stereo PCM samples from the ES8311 ADC (microphone path).
 // buf         : destination buffer, must hold `stereo_samples` int16_t values.
 // stereo_samples: number of interleaved L/R int16 samples to read (must be even).
