@@ -75,10 +75,17 @@ esp_err_t tts_init(const char *data_path)
 
     espeak_SetSynthCallback(synth_callback);
 
-    espeak_ERROR err = espeak_SetVoiceByName("es");
+    // "roa/es" (no solo "es") — el español vive en lang/roa/es (familia romance).
+    // LoadVoice() sólo prueba voices/<name> y lang/<name> literalmente (voices.c
+    // LoadVoice()); si no coincide cae a espeak_ListVoices()/GetVoices(), que
+    // escanea TODO el árbol lang/+voices/ (~323 archivos, 37 carpetas) sobre SD
+    // a 20MHz — eso costaba ~2.5s. Pasando el path relativo exacto se evita
+    // el escaneo por completo (atajo documentado en voices.c: "first check for
+    // a voice with this filename — this may avoid the need to call espeak_ListVoices()").
+    espeak_ERROR err = espeak_SetVoiceByName("roa/es");
     if (err != EE_OK) {
-        ESP_LOGE(TAG, "espeak_SetVoiceByName('es') error %d — "
-                       "verificar que lang/es existe en %s", err, data_path);
+        ESP_LOGE(TAG, "espeak_SetVoiceByName('roa/es') error %d — "
+                       "verificar que lang/roa/es existe en %s", err, data_path);
         return ESP_FAIL;
     }
 
