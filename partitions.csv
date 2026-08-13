@@ -4,13 +4,15 @@
 # Offset 0x8000: esta tabla (CONFIG_PARTITION_TABLE_OFFSET=0x8000)
 #
 # Cambios respecto al default single-app:
-#   - factory extendida a 3 MB (firmware con ESP-SR linkado)
+#   - factory extendida a 6 MB (firmware con ESP-SR + eSpeak-NG + esp-dl/pp_ocr_v6
+#     linkados — el binario con OCR on-device ronda ~4.1 MB, se deja margen para
+#     crecer sin tener que volver a tocar esta tabla)
 #
-# Los modelos ESP-SR se cargan desde la microSD (/sdcard/sr_model/)
-# en lugar de una partición flash, eliminando la restricción de tamaño.
-# Ver instrucciones de copia en Roadmap.md Fase 4.
+# Los modelos ESP-SR y pp_ocr_v6 se cargan desde la microSD (/sdcard/sr_model/,
+# /sdcard/models/p4/) en lugar de una partición flash, eliminando esa restricción
+# de tamaño. Ver sdcard_files/README.md.
 #
 # Name,     Type, SubType, Offset,    Size
 nvs,        data, nvs,     0x9000,    0x6000
 phy_init,   data, phy,     0xf000,    0x1000
-factory,    app,  factory, 0x10000,   0x300000
+factory,    app,  factory, 0x10000,   0x600000

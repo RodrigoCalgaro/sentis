@@ -7,6 +7,7 @@
 #include "esp_wn_models.h"
 #include "esp_mn_speech_commands.h"
 #include "model_path.h"
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "stt";
@@ -25,6 +26,8 @@ static const struct {
     {3, "turn right"},
     {4, "alert on"},
     {5, "help"},
+    {6, "start reading"},
+    {7, "stop reading"},
 };
 
 static srmodel_list_t      *s_models    = NULL;
@@ -125,8 +128,15 @@ void stt_feed(const int16_t *mono_samples, size_t count)
                 break;
             }
         }
-        strncpy(result.text, label, STT_COMMAND_TEXT_MAX - 1);
-        result.text[STT_COMMAND_TEXT_MAX - 1] = '\0';
+        // snprintf trunca y termina en NUL siempre, a diferencia de strncpy
+        // (que además dispara -Wstringop-truncation en builds -O2/PERF).
+        // El truncamiento es intencional aquí (label puede venir de
+        // results->string, hasta 255 bytes, hacia un buffer de 64) — GCC no
+        // puede ver que es a propósito, de ahí el pragma puntual.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+        snprintf(result.text, STT_COMMAND_TEXT_MAX, "%s", label);
+#pragma GCC diagnostic pop
 
         ESP_LOGI(TAG, "detectado: id=%d  \"%s\"  (score=%.2f)",
                  result.command_id, result.text,

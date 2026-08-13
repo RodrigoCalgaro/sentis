@@ -1,0 +1,11 @@
+dependencies:
+  espressif/esp-dl:
+    version: '*'
+description: PP-OCRv6 two-stage OCR pipeline.
+license: MIT
+repository: git://github.com/espressif/esp-dl.git
+repository_info:
+  commit_sha: 12c0616de145b704e1149c474b9a1e852e631d67
+  path: models/pp_ocr_v6
+url: https://github.com/espressif/esp-dl/tree/master/models/pp_ocr_v6
+version: 0.1.0

@@ -10,6 +10,7 @@
 #include "mic.h"
 #include "stt.h"
 #include "tts.h"
+#include "ocr.h"
 
 // =============================================================================
 // Umbrales de proximidad — ajustar estos dos valores para calibrar las distancias
@@ -58,6 +59,21 @@ static void on_stt_result(const stt_result_t *result)
 
     // Publicar al viewer gráfico (no-op si CONFIG_MONITOR_ENABLED=n).
     monitor_set_stt_text(result->text);
+
+    // Despacho de comandos que requieren acción — solo señalizar tareas,
+    // NUNCA bloquear aquí (esta función corre inline dentro de mic_task,
+    // prioridad 6). ocr_reading_start/stop son no bloqueantes y seguras de
+    // llamar aunque ocr_init() no haya corrido todavía.
+    switch (result->command_id) {
+        case 6:  // "start reading"
+            ocr_reading_start();
+            break;
+        case 7:  // "stop reading"
+            ocr_reading_stop();
+            break;
+        default:
+            break;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -160,6 +176,17 @@ static void proximity_task(void *arg)
 void app_main(void)
 {
     haptic_init();
+
+    // Autotest hápticos: pulsa cada motor por separado para confirmar al
+    // arrancar que ambos responden (mismo espíritu que audio_play_wav más
+    // abajo para el speaker). Usa los patrones existentes en vez de tocar
+    // el PWM directo para no pisar la lectura de s_pattern de haptic_task.
+    haptic_set_pattern(HAPTIC_PATTERN_PULSE_LEFT);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    haptic_set_pattern(HAPTIC_PATTERN_PULSE_RIGHT);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    haptic_set_pattern(HAPTIC_PATTERN_OFF);
+
     lidar_init();
 
     // ---- Fase 2: almacenamiento y audio ----
@@ -192,6 +219,16 @@ void app_main(void)
 
     // ---- Fase 5: cámara ----
     vision_init();
+
+    // ---- Fase 7: lectura OCR on-device (pp_ocr_v6 desde SD) ----
+    // ocr_init carga detector+reconocedor desde la SD (ruta fija por Kconfig,
+    // ver ocr.h) y deja la tarea de lectura lista pero inactiva hasta el
+    // comando de voz "start reading" (ver on_stt_result). No fatal: si faltan
+    // los archivos en la SD, se loguea el error y el sistema sigue operando
+    // sin OCR.
+    if (storage_is_mounted()) {
+        ocr_init();
+    }
 
     // Monitor visual solo para desarrollo (menuconfig → SENTIS Monitor).
     // monitor_init();

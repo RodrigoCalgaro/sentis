@@ -142,6 +142,48 @@ CONFIG_MODEL_IN_SDCARD=y
 CONFIG_SR_MN_EN_MULTINET7_QUANT=y
 
 # -----------------------------------------------------------------------------
+# pp_ocr_v6 — modelos de OCR (Fase 7)
+#
+# Igual que ESP-SR y eSpeak-NG: modelos en la SD, no en flash. El default del
+# propio componente es MODEL_IN_FLASH_RODATA (hornea el .espdl en el binario),
+# lo cambiamos explícitamente a SD.
+#
+# Directorio en la SD: CONFIG_PP_OCR_V6_MODEL_SDCARD_DIR default = "models/p4"
+# (relativo al mount point) — se deja el default porque coincide exactamente
+# con la carpeta que trae el propio paquete (models/p4/*.espdl), así el
+# provisioning es una copia directa sin renombrar nada. Ver sdcard_files/README.md.
+# -----------------------------------------------------------------------------
+CONFIG_PP_OCR_V6_MODEL_IN_SDCARD=y
+
+# -----------------------------------------------------------------------------
+# Optimización de compilador — necesaria para inferencia pp_ocr_v6 (Fase 7)
+#
+# El proyecto venía con el default de ESP-IDF (Debug, -Og). La inferencia de
+# esp-dl envuelve sus kernels de conv2d/reduce en wrappers std::function/lambda
+# (dl_base.hpp, dl_module_reduce_base.hpp) que en -Og NO se inlinean, sumando
+# overhead real por cada llamada indirecta multiplicado por cientos de miles
+# de píxeles/canales — suficiente para que una sola pasada del detector supere
+# los 5s del task watchdog y dispare "task_wdt" en el IDLE del core que corre
+# la tarea de OCR (esta nunca cede CPU durante la inferencia).
+#
+# CONFIG_COMPILER_OPTIMIZATION_PERF es exactamente lo que usa el ejemplo
+# oficial de Espressif (esp-dl examples/pp_ocr_v6/sdkconfig.defaults.esp32p4).
+# -----------------------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# -----------------------------------------------------------------------------
+# Task watchdog — margen extra para inferencia OCR (Fase 7)
+#
+# Medido en hardware (2026-08-10, build PERF): una sola pasada del detector
+# pp_ocr_v6 sobre el frame 400x320 tarda ~15-18s en este chip — 15s quedaba
+# justo en el límite y disparaba "task_wdt" una vez por ciclo (no fatal,
+# CONFIG_ESP_TASK_WDT_PANIC está off, pero es ruido). 25s da margen real.
+# Una tarea genuinamente trabada seguiría disparando el watchdog igual, solo
+# que con más margen antes de considerarla colgada.
+# -----------------------------------------------------------------------------
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=25
+
+# -----------------------------------------------------------------------------
 # Main task stack
 #
 # El default de ESP-IDF es 3584 bytes.  eSpeak-NG (TranslateClause +

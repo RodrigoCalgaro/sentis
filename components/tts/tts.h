@@ -2,6 +2,10 @@
 
 #include "esp_err.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // =============================================================================
 // TTS — síntesis de voz en español vía eSpeak-NG.
 //
@@ -24,3 +28,7 @@ esp_err_t tts_init(const char *data_path);
 // Bloqueante — retorna cuando la reproducción termina.
 // Requiere tts_init() exitoso.
 esp_err_t tts_speak(const char *text);
+
+#ifdef __cplusplus
+}
+#endif

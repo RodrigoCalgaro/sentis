@@ -10,12 +10,14 @@
 // Recibe chunks de audio mono 16 kHz 16-bit desde el componente mic y
 // corre el reconocimiento de comandos on-device sin WiFi ni latencia de red.
 //
-// Comandos predefinidos (IDs 1–5):
-//   1  "stop"         — detener acción actual
-//   2  "turn left"    — girar a la izquierda
-//   3  "turn right"   — girar a la derecha
-//   4  "alert on"     — activar alerta de emergencia
-//   5  "help"         — modo de emergencia / llamada de auxilio
+// Comandos predefinidos (IDs 1–7):
+//   1  "stop"           — detener acción actual
+//   2  "turn left"      — girar a la izquierda
+//   3  "turn right"     — girar a la derecha
+//   4  "alert on"       — activar alerta de emergencia
+//   5  "help"           — modo de emergencia / llamada de auxilio
+//   6  "start reading"  — iniciar lectura OCR + locución (componente ocr)
+//   7  "stop reading"   — detener lectura OCR en curso
 //
 // Para agregar comandos propios: editar s_commands[] en stt.c y recompilar.
 //
