@@ -11,6 +11,7 @@
 #include "esp_ldo_regulator.h"
 #include "hal/mipi_csi_brg_ll.h"
 #include "driver/isp_core.h"
+#include "driver/isp_demosaic.h"
 #include "ov5647.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -27,15 +28,17 @@ static const char *TAG = "vision";
 //
 // El OV5647 en modo MIPI CSI-2 no soporta resoluciones inferiores a 800×640.
 // Se usa el modo RAW8 más pequeño disponible para minimizar el tamaño del buffer
-// y el tiempo de análisis. El buffer ocupa 800×640 = 512.000 bytes y debe
-// residir en PSRAM (habilitar en menuconfig → Component config → ESP PSRAM).
+// y el tiempo de análisis. El ISP demosaica ese Bayer crudo a RGB565 antes de
+// llegar al buffer (ver vision_init, sección ISP) — 2 bytes/píxel, buffer
+// ~1.024.000 bytes, debe residir en PSRAM (habilitar en menuconfig →
+// Component config → ESP PSRAM).
 //
 // El análisis heurístico trabaja con submuestreo: analiza 1 de cada STEP_X
 // columnas para limitar el tiempo de cómputo a < 5 ms con el ESP32-P4 a 400 MHz.
 // =============================================================================
 #define FRAME_W   800
 #define FRAME_H   640
-#define FRAME_SZ  (FRAME_W * FRAME_H)  // bytes, formato RAW8 (Bayer RGGB)
+#define FRAME_SZ  (FRAME_W * FRAME_H * 2)  // bytes, formato RGB565 (2 B/píxel, tras demosaico ISP)
 
 // Submuestreo horizontal: tomar 1 de cada N columnas en el análisis de bordes.
 // Con STEP_X = 4 se procesa 1/4 del ancho real → tiempo equivalente a 200 col.
@@ -106,6 +109,14 @@ static volatile bool            s_ready = false;
 static uint8_t           *s_display_frame = NULL;
 static SemaphoreHandle_t  s_display_mutex = NULL;
 
+// Extrae un proxy de luminancia barato de un píxel RGB565 (RRRRRGGGGGGBBBBB)
+// usando solo el canal verde (6 bits, el más cercano a luma) — evita floats
+// y multiplicaciones, suficiente para la heurística de actividad de bordes.
+static inline uint8_t rgb565_luma_proxy(uint16_t px)
+{
+    return (uint8_t)(((px >> 5) & 0x3F) << 2);
+}
+
 // -----------------------------------------------------------------------------
 // analyze_frame — heurística de posición por actividad de bordes horizontales.
 //
@@ -113,11 +124,6 @@ static SemaphoreHandle_t  s_display_mutex = NULL;
 // derecha). En cada franja calcula el promedio de diferencias absolutas entre
 // columnas adyacentes muestreadas cada STEP_X píxeles. Un borde nítido en el
 // eje X produce una diferencia alta; un fondo uniforme produce diferencia ~0.
-//
-// Nota sobre RAW8 (Bayer RGGB):
-//   Los píxeles pares de cada fila son R o G; los impares son G o B. Esta
-//   mezcla de canales no afecta la detección de bordes porque las transiciones
-//   en los bordes de un objeto se manifiestan en todos los canales de color.
 // -----------------------------------------------------------------------------
 static obstacle_side_t analyze_frame(const uint8_t *frame)
 {
@@ -128,11 +134,11 @@ static obstacle_side_t analyze_frame(const uint8_t *frame)
     uint32_t act[3] = {0};
 
     for (int y = 0; y < FRAME_H; y++) {
-        const uint8_t *row = &frame[y * FRAME_W];
+        const uint16_t *row = (const uint16_t *)(frame + (size_t)y * FRAME_W * 2);
         // Paso de STEP_X para reducir carga; el borde se detecta igual porque
         // los cambios de intensidad en un borde real abarcan múltiples píxeles.
         for (int x = STEP_X; x < FRAME_W; x += STEP_X) {
-            int diff = (int)row[x] - (int)row[x - STEP_X];
+            int diff = (int)rgb565_luma_proxy(row[x]) - (int)rgb565_luma_proxy(row[x - STEP_X]);
             if (diff < 0) diff = -diff;
 
             int zone = x / zone_w;
@@ -172,6 +178,7 @@ static obstacle_side_t analyze_frame(const uint8_t *frame)
 static void vision_task(void *arg)
 {
     static const char *side_names[] = {"NONE", "LEFT", "CENTER", "RIGHT"};
+    // static int dbg_count = 0;  // solo usado por el log RGB565 comentado más abajo
 
     while (1) {
         if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -179,6 +186,26 @@ static void vision_task(void *arg)
             s_side  = result;
             s_ready = true;
             ESP_LOGD(TAG, "frame ok — side=%s", side_names[result]);
+
+            // DEBUG TEMPORAL: verificar si el ISP realmente entrega color
+            // real (R!=G!=B por píxel) o si sigue siendo gris de facto pese
+            // a la config RGB565 — bypassa JPEG/UART/Python por completo.
+            // Loguea 1 vez cada ~50 frames (~1s a 50fps) para no saturar.
+            // Comentado: ya verificado en hardware, ensuciaba demasiado el
+            // monitor serie (mismo criterio que el log de distancia en lidar.c).
+            // if (++dbg_count >= 50) {
+            //     dbg_count = 0;
+            //     const uint16_t *px = (const uint16_t *)s_frame;
+            //     ESP_LOGI(TAG, "RGB565 raw samples:");
+            //     for (int i = 0; i < 5; i++) {
+            //         int idx = (FRAME_H / 2) * FRAME_W + (FRAME_W / 2) + i * 7;
+            //         uint16_t v = px[idx];
+            //         uint8_t r = (uint8_t)(((v >> 11) & 0x1F) << 3);
+            //         uint8_t g = (uint8_t)(((v >> 5)  & 0x3F) << 2);
+            //         uint8_t b = (uint8_t)(( v         & 0x1F) << 3);
+            //         ESP_LOGI(TAG, "  px[%d]=0x%04X -> R=%d G=%d B=%d", idx, v, r, g, b);
+            //     }
+            // }
 
             // Copia no bloqueante al buffer de display para el monitor WiFi.
             // Si el monitor está codificando (mutex tomado), se omite este frame.
@@ -362,6 +389,14 @@ esp_err_t vision_init(void)
         .v_res                  = selected->height,
         .data_lane_num          = selected->mipi_info.lane_num,
         .lane_bit_rate_mbps     = OV5647_LANE_BIT_RATE_MBPS,
+        // RAW8 in/out — probar RGB565 acá (como hace mipi_isp_dsi_main.c, que
+        // usa otro sensor/modo) falla en ESTE sensor/modo con
+        // ESP_ERR_NOT_SUPPORTED ("failed to configure format conversion"),
+        // confirmado en hardware. El test oficial específico de OV5647 en
+        // este modo exacto (esp_driver_cam/test_apps/csi/main/test_csi_ov5647.c)
+        // sí deja esto en RAW8/RAW8 — la conversión Bayer→RGB real la hace
+        // el ISP (ver isp_cfg + esp_isp_demosaic_enable() más abajo), no el
+        // controlador CSI.
         .input_data_color_type  = CAM_CTLR_COLOR_RAW8,
         .output_data_color_type = CAM_CTLR_COLOR_RAW8,
         .queue_items            = 1,
@@ -416,7 +451,7 @@ esp_err_t vision_init(void)
     //    El semáforo sincroniza el ISR (csi_trans_finished_cb) con vision_task.
     //    El buffer debe asignarse antes de registrar los callbacks porque
     //    csi_get_new_trans_cb lo referencia desde el primer frame.
-    //    800×640 RAW8 = 512.000 bytes — requiere PSRAM.
+    //    800×640 RGB565 = 1.024.000 bytes — requiere PSRAM.
     // -------------------------------------------------------------------------
     s_frame_sem = xSemaphoreCreateBinary();
     if (!s_frame_sem) {
@@ -470,16 +505,19 @@ esp_err_t vision_init(void)
     // -------------------------------------------------------------------------
     isp_proc_handle_t isp_proc = NULL;
     {
-        // bypass_isp=0 con RAW8→RAW8: el ISP debe quedar HABILITADO para que
-        // los datos fluyan desde el MIPI Host al CSI bridge. Con bypass_isp=1
-        // el driver bloquea esp_isp_enable() y los datos no llegan al bridge.
-        // Con bypass_isp=0 y RAW8 in/out, el ISP actúa como pass-through sin
-        // procesar el Bayer (demosaic deshabilitado para RAW output).
+        // output_data_color_type = RGB565: le dice al ISP que la salida es
+        // color, pero el bloque de demosaico (interpolación Bayer→RGB) tiene
+        // su propia máquina de estados independiente y hay que habilitarlo
+        // explícitamente con esp_isp_demosaic_enable() — confirmado en
+        // hardware: dos ejemplos oficiales de Espressif que NO lo llaman
+        // (esp_driver_cam/test_apps/csi/main/test_csi_ov5647.c,
+        // examples/peripherals/camera/mipi_isp_dsi/main/mipi_isp_dsi_main.c)
+        // resultaron insuficientes — sin este call la imagen sigue en gris.
         const esp_isp_processor_cfg_t isp_cfg = {
             .clk_hz              = 80 * 1000 * 1000,
             .input_data_source   = ISP_INPUT_DATA_SOURCE_CSI,
             .input_data_color_type  = ISP_COLOR_RAW8,
-            .output_data_color_type = ISP_COLOR_RAW8,
+            .output_data_color_type = ISP_COLOR_RGB565,
             .has_line_start_packet  = true,   // OV5647_CSI_LINESYNC_ENABLE=y
             .has_line_end_packet    = false,
             .h_res       = FRAME_W,
@@ -492,7 +530,8 @@ esp_err_t vision_init(void)
             return ret;
         }
         ESP_ERROR_CHECK(esp_isp_enable(isp_proc));
-        ESP_LOGI(TAG, "ISP enabled (RAW8 pass-through, pipeline inactive)");
+        ESP_ERROR_CHECK(esp_isp_demosaic_enable(isp_proc));
+        ESP_LOGI(TAG, "ISP enabled — demosaico RGB565 activo (RAW8 Bayer → RGB565)");
     }
 
     // -------------------------------------------------------------------------
@@ -509,7 +548,7 @@ esp_err_t vision_init(void)
     // -------------------------------------------------------------------------
     xTaskCreate(vision_task, "vision", 4096, NULL, 4, NULL);
 
-    ESP_LOGI(TAG, "initialized — %ux%u RAW8 @%ufps, step=%d, edge_thr=%d",
+    ESP_LOGI(TAG, "initialized — %ux%u RGB565 @%ufps, step=%d, edge_thr=%d",
              selected->width, selected->height, selected->fps, STEP_X, EDGE_THRESHOLD);
     return ESP_OK;
 }

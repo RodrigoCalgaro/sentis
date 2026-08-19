@@ -64,12 +64,13 @@ static bool model_file_looks_valid(const char *filename)
     return false;
 }
 
-// Downsample natural de ocr_preprocess_bayer_to_rgb888 (bloques Bayer 2x2).
-// ocr_preprocess_bayer_to_rgb888 intercambia ancho/alto al corregir la
-// orientación (ver comentario ahí) — por eso acá también quedan invertidos
-// respecto al frame crudo (VISION_FRAME_W x VISION_FRAME_H).
-static constexpr int kImgW = VISION_FRAME_H / 2; // 320
-static constexpr int kImgH = VISION_FRAME_W / 2; // 400
+// ocr_preprocess_rgb565_to_rgb888 ya no hace downsampling (el ISP entrega
+// color real por píxel, ya no hace falta promediar bloques para debayer) —
+// solo intercambia ancho/alto al corregir la orientación (ver comentario en
+// ocr_preprocess.h), por eso acá quedan invertidos respecto al frame crudo
+// (VISION_FRAME_W x VISION_FRAME_H).
+static constexpr int kImgW = VISION_FRAME_H; // 640
+static constexpr int kImgH = VISION_FRAME_W; // 800
 
 // Mismo umbral que usa pp_ocr_v6::PPOCRV6 internamente para descartar
 // reconocimientos de baja confianza (no usamos PPOCRV6 directamente porque
@@ -121,7 +122,7 @@ static void ocr_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
-            ocr_preprocess_bayer_to_rgb888(raw, VISION_FRAME_W, VISION_FRAME_H, rgb);
+            ocr_preprocess_rgb565_to_rgb888(raw, VISION_FRAME_W, VISION_FRAME_H, rgb);
             if (s_stop_req) break;
 
             auto boxes = s_det->run(img);

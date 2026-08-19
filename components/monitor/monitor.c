@@ -20,8 +20,8 @@
 #define STT_TEXT_MAX      64
 
 // A 921600 baud (~92 KB/s útiles) y quality=30:
-//   JPEG 800×640 gray ≈ 15–25 KB → tiempo transmisión ≈ 160–270 ms
-//   Con FRAME_INTERVAL_MS=500 hay margen suficiente incluso en el peor caso.
+//   JPEG 800×640 color (YUV420) ≈ 15–30 KB → tiempo transmisión ≈ 160–320 ms
+//   Con FRAME_INTERVAL_MS=1000 hay margen suficiente incluso en el peor caso.
 #define FRAME_INTERVAL_MS  1000
 
 // =============================================================================
@@ -97,8 +97,8 @@ static void monitor_task(void *arg)
              CONFIG_ESP_CONSOLE_UART_BAUDRATE);
 
     const jpeg_encode_cfg_t enc_cfg = {
-        .src_type      = JPEG_ENCODE_IN_FORMAT_GRAY,
-        .sub_sample    = JPEG_DOWN_SAMPLING_GRAY,
+        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,  // más compresión, prioriza banda UART
         .image_quality = 30,   // ~3 KB/frame a 115200 baud → ~3 fps
         .width         = VISION_FRAME_W,
         .height        = VISION_FRAME_H,

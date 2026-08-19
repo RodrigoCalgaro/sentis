@@ -100,23 +100,31 @@ static void lidar_task(void *arg)
     // Pausa para que el sensor complete su rutina de inicialización interna.
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // --- Validación inicial: confirmar que el sensor envía tramas correctas ---
+    // --- Validación inicial: solo diagnóstico, NUNCA mata la tarea ---
+    //
+    // Antes, si el sensor no mandaba una trama válida en los primeros 500ms
+    // (por ejemplo porque su rutina de boot interna tardó un poco más esa
+    // vez), la tarea se autodestruía para siempre (vTaskDelete) y el LiDAR
+    // quedaba deshabilitado el resto de la sesión — un timing fallido y
+    // puntual no debería tumbar el sensor permanentemente. El bucle
+    // principal de abajo ya es resiliente (resincroniza por cabecera
+    // indefinidamente), así que un fallo acá solo se loguea y se sigue.
     uart_flush_input(BOARD_LIDAR_UART_NUM);
     int n = uart_read_bytes(BOARD_LIDAR_UART_NUM, s_rx, sizeof(s_rx),
                             pdMS_TO_TICKS(500));
     if (n <= 0) {
-        ESP_LOGE(TAG, "No data — check Verde→GPIO%d", BOARD_LIDAR_UART_RX_GPIO);
-        vTaskDelete(NULL);
-        return;
+        ESP_LOGW(TAG, "sin datos en el arranque — check Verde→GPIO%d "
+                       "(reintentando en el bucle principal)", BOARD_LIDAR_UART_RX_GPIO);
+    } else {
+        int off = find_sp10_frame(s_rx, n);
+        if (off < 0) {
+            ESP_LOGW(TAG, "%d bytes recibidos pero sin trama SP10 válida "
+                           "(reintentando en el bucle principal)", n);
+        } else {
+            ESP_LOGI(TAG, "SP10M01 streaming — first frame: %u mm",
+                     sp10_distance_mm(&s_rx[off]));
+        }
     }
-    int off = find_sp10_frame(s_rx, n);
-    if (off < 0) {
-        ESP_LOGE(TAG, "%d bytes received but no valid SP10 frame", n);
-        vTaskDelete(NULL);
-        return;
-    }
-    ESP_LOGI(TAG, "SP10M01 streaming — first frame: %u mm",
-             sp10_distance_mm(&s_rx[off]));
 
     // --- Bucle principal: lectura continua sincronizada por cabecera ---
     uint8_t f[SP10_FRAME_LEN];
@@ -143,7 +151,7 @@ static void lidar_task(void *arg)
         uint16_t dist_mm = sp10_distance_mm(f);
         s_distance_mm = dist_mm;
 
-        ESP_LOGI(TAG, "dist=%u mm", dist_mm);
+        // ESP_LOGI(TAG, "dist=%u mm", dist_mm);
     }
 }
 

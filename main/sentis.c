@@ -95,6 +95,14 @@ static void on_stt_result(const stt_result_t *result)
 //     siempre                   → ALERT_BOTH   (ambos vibran, máxima prioridad)
 //     (posición ignorada: a <50 cm la reacción es crítica y no hay margen)
 //
+//   ocr_is_reading() == true    → lectura OCR en curso: OFF sin importar la
+//     medición del LiDAR. El objeto a leer se acerca a la cámara a propósito,
+//     así que la vibración continua de "obstáculo cercano" no aporta nada y
+//     solo distrae al usuario mientras escucha la lectura. Esta condición
+//     tiene prioridad absoluta sobre la tabla de fusión de abajo y se
+//     restaura la lógica normal recién cuando el comando "stop reading" baja
+//     la bandera (ver ocr_reading_stop() en ocr.cpp).
+//
 // La función haptic_set_pattern es segura para llamar desde esta tarea porque
 // la escritura sobre s_pattern es atómica (ver haptics.c).
 // La lectura de vision_get_obstacle_side() también es atómica (volatile uint8_t).
@@ -102,9 +110,17 @@ static void on_stt_result(const stt_result_t *result)
 static void proximity_task(void *arg)
 {
     while (1) {
-        uint16_t dist = lidar_get_distance_mm();
-
         haptic_pattern_t pattern;
+
+        if (ocr_is_reading()) {
+            // Lectura OCR en curso: prioridad absoluta, ignorar LiDAR/visión.
+            pattern = HAPTIC_PATTERN_OFF;
+            haptic_set_pattern(pattern);
+            vTaskDelay(pdMS_TO_TICKS(PROXIMITY_POLL_MS));
+            continue;
+        }
+
+        uint16_t dist = lidar_get_distance_mm();
 
         if (dist == 0 || dist > PROXIMITY_WARN_MM) {
             // Sin datos todavía, o el obstáculo está fuera del rango de interés.

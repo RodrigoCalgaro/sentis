@@ -157,7 +157,7 @@ def main(port: str) -> None:
             # tipo == "jpeg"
             zone = extra
             last_zone = zone
-            img = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            img = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
             if img is None:
                 continue
 
@@ -166,7 +166,7 @@ def main(port: str) -> None:
             buf = bytearray()   # descartar buffer para mostrar siempre el frame reciente
 
             frames_rx += 1
-            display = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            display = img
             overlay_zone(display, last_zone, last_stt)
             cv2.imshow("SENTIS Monitor", display)
 
