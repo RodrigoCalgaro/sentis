@@ -20,7 +20,7 @@
 #define STT_TEXT_MAX      64
 
 // A 921600 baud (~92 KB/s útiles) y quality=30:
-//   JPEG 800×640 color (YUV420) ≈ 15–30 KB → tiempo transmisión ≈ 160–320 ms
+//   JPEG 1280×960 color (YUV420) ≈ 35–70 KB → tiempo transmisión ≈ 380–760 ms
 //   Con FRAME_INTERVAL_MS=1000 hay margen suficiente incluso en el peor caso.
 #define FRAME_INTERVAL_MS  1000
 
@@ -46,9 +46,27 @@
 static const uint8_t MAGIC_JPEG[4] = {0xAB, 0xCD, 0xEF, 0x01};
 static const uint8_t MAGIC_TEXT[4] = {0xAB, 0xCD, 0xEF, 0x02};
 
-static jpeg_encoder_handle_t  s_enc        = NULL;
-static uint8_t               *s_frame_copy = NULL;
-static uint8_t               *s_jpeg_out   = NULL;
+static jpeg_encoder_handle_t  s_enc           = NULL;
+static uint8_t               *s_frame_copy    = NULL;
+static uint8_t               *s_frame_mirrored = NULL;
+static uint8_t               *s_jpeg_out      = NULL;
+
+// El sensor está montado rotado respecto a la vista del usuario — vision.c
+// entrega el frame en la orientación cruda del sensor. El pipeline de OCR ya
+// corrige esto (espejado vertical, ver ocr_preprocess.c); acá se aplica la
+// misma corrección mano a mano pero sin desempacar a RGB888, para que lo que
+// se vea en monitor_viewer.py sea representativo de lo que recibe el modelo,
+// no el crudo del sensor. Misma dimensión que la entrada (sin transponer) —
+// al ser un espejado vertical puro, alcanza con copiar filas completas en
+// orden invertido, sin tocar el orden de los píxeles dentro de cada fila.
+static void mirror_rgb565(const uint8_t *src, int w, int h, uint8_t *dst)
+{
+    for (int y = 0; y < h; y++) {
+        const uint8_t *src_row = src + (size_t)(h - 1 - y) * w * 2;
+        uint8_t *dst_row = dst + (size_t)y * w * 2;
+        memcpy(dst_row, src_row, (size_t)w * 2);
+    }
+}
 
 // Último texto STT recibido, protegido por mutex ligero.
 static SemaphoreHandle_t s_stt_mutex  = NULL;
@@ -96,6 +114,9 @@ static void monitor_task(void *arg)
     ESP_LOGI(TAG, "monitor activo (%d baud) — python tools/monitor_viewer.py <COMX>",
              CONFIG_ESP_CONSOLE_UART_BAUDRATE);
 
+    // mirror_rgb565 mantiene las dimensiones de VISION_FRAME_W/H (solo espeja,
+    // no transpone), así que el encoder usa el mismo ancho/alto que el frame
+    // crudo.
     const jpeg_encode_cfg_t enc_cfg = {
         .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
         .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,  // más compresión, prioriza banda UART
@@ -109,10 +130,11 @@ static void monitor_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(FRAME_INTERVAL_MS));
             continue;
         }
+        mirror_rgb565(s_frame_copy, VISION_FRAME_W, VISION_FRAME_H, s_frame_mirrored);
 
         uint32_t out_size = 0;
         esp_err_t ret = jpeg_encoder_process(s_enc, &enc_cfg,
-                                             s_frame_copy, VISION_FRAME_SZ,
+                                             s_frame_mirrored, VISION_FRAME_SZ,
                                              s_jpeg_out, JPEG_OUT_SIZE,
                                              &out_size);
         if (ret != ESP_OK || out_size == 0) {
@@ -139,14 +161,16 @@ static void monitor_task(void *arg)
 
 esp_err_t monitor_init(void)
 {
-    s_stt_mutex  = xSemaphoreCreateMutex();
-    s_frame_copy = heap_caps_malloc(VISION_FRAME_SZ,
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-    s_jpeg_out   = heap_caps_malloc(JPEG_OUT_SIZE,
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-    if (!s_frame_copy || !s_jpeg_out) {
-        ESP_LOGE(TAG, "sin PSRAM para buffers (%d + %d bytes)",
-                 VISION_FRAME_SZ, JPEG_OUT_SIZE);
+    s_stt_mutex     = xSemaphoreCreateMutex();
+    s_frame_copy    = heap_caps_malloc(VISION_FRAME_SZ,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    s_frame_mirrored = heap_caps_malloc(VISION_FRAME_SZ,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    s_jpeg_out      = heap_caps_malloc(JPEG_OUT_SIZE,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    if (!s_frame_copy || !s_frame_mirrored || !s_jpeg_out) {
+        ESP_LOGE(TAG, "sin PSRAM para buffers (%d + %d + %d bytes)",
+                 VISION_FRAME_SZ, VISION_FRAME_SZ, JPEG_OUT_SIZE);
         return ESP_ERR_NO_MEM;
     }
 

@@ -11,16 +11,17 @@ void ocr_preprocess_rgb565_to_rgb888(const uint8_t *src, int w, int h, uint8_t *
 {
     const uint16_t *src16 = (const uint16_t *)src;
 
-    // Salida transpuesta: ancho=h, alto=w (ver nota de orientación en el .h).
+    // Espejado vertical (arriba-abajo), mismas dimensiones que la entrada
+    // (ver nota de orientación en el .h).
     for (int y = 0; y < h; y++) {
-        const uint16_t *row = src16 + (size_t)y * w;
+        const uint16_t *row = src16 + (size_t)(h - 1 - y) * w;
+        uint8_t *dst_row = dst + (size_t)y * w * 3;
 
         for (int x = 0; x < w; x++) {
             uint8_t r, g, b;
             unpack_rgb565(row[x], &r, &g, &b);
 
-            // rgb565[y][x] (fila y, col x) -> salida[x][y] (fila x, col y)
-            uint8_t *px = dst + ((size_t)x * h + y) * 3;
+            uint8_t *px = dst_row + (size_t)x * 3;
             px[0] = r;
             px[1] = g;
             px[2] = b;

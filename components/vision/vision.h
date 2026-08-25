@@ -8,8 +8,10 @@
 // Dimensiones del frame capturado — expuestas para el componente monitor.
 // Formato RGB565 (2 bytes/píxel) — el ISP demosaica el Bayer crudo del
 // OV5647 antes de que el frame llegue a s_frame/s_display_frame.
-#define VISION_FRAME_W   800
-#define VISION_FRAME_H   640
+// Debe coincidir con FRAME_W/FRAME_H en vision.c (ambos hardcoded por
+// separado, no hay una única fuente de verdad entre .c y .h).
+#define VISION_FRAME_W   1280
+#define VISION_FRAME_H   960
 #define VISION_FRAME_SZ  (VISION_FRAME_W * VISION_FRAME_H * 2)
 
 #ifdef __cplusplus
@@ -67,6 +69,17 @@ bool vision_is_ready(void);
 // accesible por DMA. Bloquea hasta 50 ms esperando el mutex. Retorna false
 // si la cámara aún no capturó ningún frame o si dst/len son inválidos.
 bool vision_copy_display_frame(uint8_t *dst, size_t len);
+
+// Pausa (paused=true) o reanuda (paused=false) la heurística de posición
+// analyze_frame() dentro de vision_task, sin detener la captura CSI ni la
+// actualización del buffer de display — vision_copy_display_frame() sigue
+// entregando frames frescos aunque esté pausada.
+//
+// Uso: el componente ocr llama esto para reducir la carga de CPU/PSRAM de
+// vision_task mientras dura una lectura OCR, ya que el lado del obstáculo
+// (s_side) no se consulta durante ese tiempo (proximity_task lo ignora
+// mientras ocr_is_reading() es true — ver main/sentis.c).
+void vision_set_analysis_paused(bool paused);
 
 #ifdef __cplusplus
 }

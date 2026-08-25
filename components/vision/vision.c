@@ -24,20 +24,33 @@
 static const char *TAG = "vision";
 
 // =============================================================================
-// Parámetros de captura — OV5647 modo MIPI RAW8 800×640 @50 fps
+// Parámetros de captura — OV5647 modo MIPI RAW10 1280×960 binning @45 fps
 //
-// El OV5647 en modo MIPI CSI-2 no soporta resoluciones inferiores a 800×640.
-// Se usa el modo RAW8 más pequeño disponible para minimizar el tamaño del buffer
-// y el tiempo de análisis. El ISP demosaica ese Bayer crudo a RGB565 antes de
-// llegar al buffer (ver vision_init, sección ISP) — 2 bytes/píxel, buffer
-// ~1.024.000 bytes, debe residir en PSRAM (habilitar en menuconfig →
-// Component config → ESP PSRAM).
+// Historial: 800×640 (Fase 5, mínimo del sensor) → insuficiente para OCR →
+// 800×1280 RAW8 (más resolución vertical) → resultó "zoomeado": ese modo
+// recorta la ventana del sensor a solo ~74% del alto activo (VSTA=248,
+// VWIN=1447 de 1944 filas — ver ov5647_input_24M_MIPI_2lane_raw8_800x1280_50fps
+// en ov5647_settings.h) porque está pensado para alimentar el panel MIPI-DSI
+// portrait de esta placa (mismo 800x1280 que TEST_MIPI_DSI_DISP_VRES en el
+// test oficial del driver), no para capturar el FOV completo.
 //
-// El análisis heurístico trabaja con submuestreo: analiza 1 de cada STEP_X
-// columnas para limitar el tiempo de cómputo a < 5 ms con el ESP32-P4 a 400 MHz.
+// 1280×960 en cambio usa binning 2×2 real sobre ~99% del área activa del
+// sensor en ambos ejes (X: 24–2600 de 2592, Y: 12–1944 de 1944 — ver
+// ov5647_input_24M_MIPI_2lane_raw10_1280x960_45fps), así que recupera el FOV
+// completo Y promedia píxeles vecinos en vez de sub-muestrear como los modos
+// RAW8 anteriores (mejor relación señal/ruido). Contrapartida: el sensor solo
+// ofrece este binning en RAW10 (10 bits empaquetados en el lane MIPI), así
+// que el CSI/ISP tienen que reconfigurarse de RAW8 a RAW10 — ver
+// CAM_CTLR_COLOR_RAW10 / ISP_COLOR_RAW10 más abajo. El ISP sigue entregando
+// RGB565 (2 bytes/píxel) al buffer final independientemente del bit-depth de
+// entrada, así que FRAME_SZ no cambia de fórmula.
+//
+// PSRAM: con este modo + monitor de desarrollo habilitado, los buffers de
+// cámara/OCR/monitor rondan ~6 MB de delta sobre 800×640 — validar con el log
+// "PSRAM libre tras init" en sentis.c antes de asumir que entra sin ajustes.
 // =============================================================================
-#define FRAME_W   800
-#define FRAME_H   640
+#define FRAME_W   1280
+#define FRAME_H   960
 #define FRAME_SZ  (FRAME_W * FRAME_H * 2)  // bytes, formato RGB565 (2 B/píxel, tras demosaico ISP)
 
 // Submuestreo horizontal: tomar 1 de cada N columnas en el análisis de bordes.
@@ -59,9 +72,12 @@ static const char *TAG = "vision";
 // =============================================================================
 #define EDGE_THRESHOLD  5
 
-// Tasas MIPI del modo seleccionado (800×640 @50fps):
-//   IDI clock = 100 MHz → lane bit rate = 100 MHz × 4 = 400 Mbps
-#define OV5647_LANE_BIT_RATE_MBPS  400
+// La tasa MIPI (lane_bit_rate_mbps) ya no se hardcodea: 1280×960 usa un IDI
+// clock distinto (88,33 MHz × 5 ≈ 441,7 Mbps, ver OV5647_MIPI_CSI_LINE_RATE_
+// 1280x960_45FPS en ov5647_settings.h) al de los modos RAW8 anteriores
+// (100 MHz × 4 = 400 Mbps) — se lee directamente de selected->mipi_info.mipi_clk
+// más abajo para no volver a desincronizar un valor a mano con cada cambio de
+// modo (ver uso en csi_cfg.lane_bit_rate_mbps).
 
 // Estado interno del componente.
 static i2c_master_bus_handle_t  s_i2c_bus    = NULL;
@@ -102,6 +118,11 @@ static IRAM_ATTR bool csi_trans_finished_cb(esp_cam_ctlr_handle_t handle,
 // lee proximity_task. La escritura de un uint8_t es atómica en RISC-V.
 static volatile obstacle_side_t s_side  = OBSTACLE_SIDE_NONE;
 static volatile bool            s_ready = false;
+
+// Pausa la heurística analyze_frame() sin detener captura/display — ver
+// vision_set_analysis_paused() en vision.h. Volatile: la escribe ocr_task,
+// la lee vision_task.
+static volatile bool s_analysis_paused = false;
 
 // Buffer de display para el monitor de desarrollo. vision_task copia s_frame
 // aquí después de cada análisis. El mutex garantiza que el monitor no lee
@@ -162,7 +183,7 @@ static obstacle_side_t analyze_frame(const uint8_t *frame)
     }
 
     // El sensor OV5647 en esta placa entrega la imagen espejada horizontalmente:
-    // la zona izquierda del buffer RAW8 corresponde al lado derecho de la escena real.
+    // la zona izquierda del buffer corresponde al lado derecho de la escena real.
     // Se invierten LEFT/RIGHT para que la heurística coincida con la realidad.
     static const obstacle_side_t map[3] = {
         OBSTACLE_SIDE_RIGHT,   // zona 0 (izq. buffer) = derecha real
@@ -182,10 +203,21 @@ static void vision_task(void *arg)
 
     while (1) {
         if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
-            obstacle_side_t result = analyze_frame(s_frame);
-            s_side  = result;
-            s_ready = true;
-            ESP_LOGD(TAG, "frame ok — side=%s", side_names[result]);
+            // Mientras dura una lectura OCR, s_side no se consulta
+            // (proximity_task lo ignora — ver ocr_is_reading() en
+            // main/sentis.c), así que nos ahorramos el costo de CPU/PSRAM de
+            // analyze_frame() sobre el frame completo. La captura CSI y la
+            // copia al buffer de display siguen activas más abajo, para que
+            // vision_copy_display_frame() (que usa ocr_task) siga entregando
+            // frames frescos.
+            if (!s_analysis_paused) {
+                obstacle_side_t result = analyze_frame(s_frame);
+                s_side  = result;
+                s_ready = true;
+                ESP_LOGD(TAG, "frame ok — side=%s", side_names[result]);
+            } else {
+                s_ready = true;
+            }
 
             // DEBUG TEMPORAL: verificar si el ISP realmente entrega color
             // real (R!=G!=B por píxel) o si sigue siendo gris de facto pese
@@ -227,7 +259,7 @@ static void vision_task(void *arg)
 //   1. MCLK/XCLK para el OV5647 (GPIO54, 24 MHz vía clock router)
 //   2. Bus I2C master (compartido con ES8311 en Fase 2 — ver nota más abajo)
 //   2. Handle SCCB sobre I2C (capa de control del sensor OV5647)
-//   3. Detección del OV5647 y selección del formato RAW8 800×640 @50fps
+//   3. Detección del OV5647 y selección del formato RAW10 1280×960 @45fps
 //   4. Controlador MIPI CSI-2 del ESP32-P4
 //   5. Streaming encendido
 //   6. Buffer de frame en PSRAM
@@ -334,7 +366,8 @@ esp_err_t vision_init(void)
     // 3. Detectar OV5647 y seleccionar formato
     //    ov5647_detect() realiza el probe I2C internamente y devuelve NULL si
     //    el sensor no responde. A continuación se consultan los formatos
-    //    disponibles y se selecciona el modo RAW8 de menor resolución (800×640).
+    //    disponibles y se selecciona el modo RAW10 binning 1280×960 (ver
+    //    comentario de parámetros de captura al inicio del archivo).
     // -------------------------------------------------------------------------
     esp_cam_sensor_config_t sensor_cfg = {
         .sccb_handle  = s_sccb_io,
@@ -352,23 +385,25 @@ esp_err_t vision_init(void)
     }
     ESP_LOGI(TAG, "OV5647 detected");
 
-    // Consultar formatos disponibles del sensor y seleccionar el de menor
-    // resolución RAW8 en modo MIPI para minimizar el tamaño del buffer.
+    // Consultar formatos disponibles del sensor y seleccionar el modo RAW10
+    // MIPI que coincide exactamente con FRAME_W×FRAME_H (ver comentario de
+    // parámetros de captura más arriba). Se matchea por dimensiones en vez de
+    // "el más chico" porque se apunta a un modo específico (binning), no al
+    // de menor resolución.
     esp_cam_sensor_format_array_t fmt_array = {0};
     ESP_ERROR_CHECK(esp_cam_sensor_query_format(sensor, &fmt_array));
 
     const esp_cam_sensor_format_t *selected = NULL;
     for (int i = 0; i < (int)fmt_array.count; i++) {
         const esp_cam_sensor_format_t *f = &fmt_array.format_array[i];
-        if (f->format != ESP_CAM_SENSOR_PIXFORMAT_RAW8) continue;
-        if (f->port   != ESP_CAM_SENSOR_MIPI_CSI)       continue;
-        if (!selected ||
-            (f->width * f->height < selected->width * selected->height)) {
-            selected = f;
-        }
+        if (f->format != ESP_CAM_SENSOR_PIXFORMAT_RAW10) continue;
+        if (f->port   != ESP_CAM_SENSOR_MIPI_CSI)        continue;
+        if (f->width  != FRAME_W || f->height != FRAME_H) continue;
+        selected = f;
+        break;
     }
     if (!selected) {
-        ESP_LOGE(TAG, "no RAW8 MIPI format found in OV5647 driver");
+        ESP_LOGE(TAG, "no RAW10 MIPI %dx%d format found in OV5647 driver", FRAME_W, FRAME_H);
         return ESP_ERR_NOT_FOUND;
     }
     ESP_LOGI(TAG, "selected format: %s (%ux%u @%ufps)",
@@ -378,9 +413,10 @@ esp_err_t vision_init(void)
 
     // -------------------------------------------------------------------------
     // 4. Controlador MIPI CSI-2
-    //    h_res / v_res del formato seleccionado (800×640 en modo RAW8 mínimo).
-    //    lane_bit_rate_mbps: IDI clock (100 MHz) × 4 = 400 Mbps para los modos
-    //    800×N del OV5647.
+    //    h_res / v_res y lane_bit_rate_mbps salen del formato seleccionado
+    //    (selected->mipi_info.mipi_clk, en Hz) en vez de una constante — cada
+    //    modo del OV5647 tiene su propio IDI clock (ver comentario de
+    //    parámetros de captura más arriba).
     // -------------------------------------------------------------------------
     const esp_cam_ctlr_csi_config_t csi_cfg = {
         .ctlr_id                = 0,
@@ -388,17 +424,13 @@ esp_err_t vision_init(void)
         .h_res                  = selected->width,
         .v_res                  = selected->height,
         .data_lane_num          = selected->mipi_info.lane_num,
-        .lane_bit_rate_mbps     = OV5647_LANE_BIT_RATE_MBPS,
-        // RAW8 in/out — probar RGB565 acá (como hace mipi_isp_dsi_main.c, que
-        // usa otro sensor/modo) falla en ESTE sensor/modo con
-        // ESP_ERR_NOT_SUPPORTED ("failed to configure format conversion"),
-        // confirmado en hardware. El test oficial específico de OV5647 en
-        // este modo exacto (esp_driver_cam/test_apps/csi/main/test_csi_ov5647.c)
-        // sí deja esto en RAW8/RAW8 — la conversión Bayer→RGB real la hace
-        // el ISP (ver isp_cfg + esp_isp_demosaic_enable() más abajo), no el
-        // controlador CSI.
-        .input_data_color_type  = CAM_CTLR_COLOR_RAW8,
-        .output_data_color_type = CAM_CTLR_COLOR_RAW8,
+        .lane_bit_rate_mbps     = (uint32_t)((selected->mipi_info.mipi_clk + 500000) / 1000000),
+        // RAW10 in/out — igual que en el modo RAW8 anterior, la conversión
+        // Bayer→RGB real la hace el ISP (ver isp_cfg + esp_isp_demosaic_enable()
+        // más abajo), no el controlador CSI. Confirmado que RAW8/RAW8 (mismo
+        // patrón) funciona en hardware; RAW10/RAW10 sigue el mismo esquema.
+        .input_data_color_type  = CAM_CTLR_COLOR_RAW10,
+        .output_data_color_type = CAM_CTLR_COLOR_RAW10,
         .queue_items            = 1,
         .bk_buffer_dis          = 1,  // usamos nuestro propio buffer en receive()
     };
@@ -451,7 +483,7 @@ esp_err_t vision_init(void)
     //    El semáforo sincroniza el ISR (csi_trans_finished_cb) con vision_task.
     //    El buffer debe asignarse antes de registrar los callbacks porque
     //    csi_get_new_trans_cb lo referencia desde el primer frame.
-    //    800×640 RGB565 = 1.024.000 bytes — requiere PSRAM.
+    //    1280×960 RGB565 = 2.457.600 bytes — requiere PSRAM.
     // -------------------------------------------------------------------------
     s_frame_sem = xSemaphoreCreateBinary();
     if (!s_frame_sem) {
@@ -498,7 +530,7 @@ esp_err_t vision_init(void)
     //
     // El ISP se interpone entre el host MIPI y el CSI bridge. Sin inicializarlo,
     // los datos nunca llegan al bridge (int_raw=0x00000000). Con bypass_isp=1
-    // los datos pasan sin procesamiento (RAW8 → RAW8 directo).
+    // los datos pasan sin procesamiento (RAW10 → RAW10 directo).
     //
     // Referencia: esp_video_csi_device.c → start_isp() y
     //             examples/peripherals/camera/mipi_isp_dsi/main/mipi_isp_dsi_main.c
@@ -513,12 +545,31 @@ esp_err_t vision_init(void)
         // (esp_driver_cam/test_apps/csi/main/test_csi_ov5647.c,
         // examples/peripherals/camera/mipi_isp_dsi/main/mipi_isp_dsi_main.c)
         // resultaron insuficientes — sin este call la imagen sigue en gris.
+        // bayer_order: se mantiene RGGB, el mismo valor que ya funciona en
+        // hardware para los modos RAW8 anteriores (800x640/800x1280), aunque
+        // el driver del sensor declara internamente GBRG para todos los modos
+        // (ver ov5647_isp_info[] en ov5647.c) — el patrón real que ve el ISP
+        // depende también de los bits de mirror/flip que arma cada tabla de
+        // registros (0x3820/0x3821), no solo del bayer_type declarado. Si el
+        // color sale corrido (p.ej. tinte magenta/verde o canales R/B
+        // invertidos) en este modo de binning, es la primera config a probar
+        // con otro valor (BGGR/GRBG).
+        // has_line_start_packet = false: a diferencia de los modos RAW8 y del
+        // RAW10 1920x1080 (que dejan el bit LINE_SYNC_ENABLE de 0x4800 en 1,
+        // ej. {0x4800, 0x34}), la tabla de registros del binning 1280x960 lo
+        // deja en 0 ({0x4800, 0x24} en ov5647_settings.h — bit4 limpio). El
+        // sensor en este modo específico no emite paquetes cortos de
+        // line-start; si el ISP los espera igual (has_line_start_packet=true,
+        // como se dejó al copiar la config de los modos anteriores) pierde la
+        // sincronía de límites de línea de forma intermitente, lo que explica
+        // los "ISP: data type error" en ráfagas (no en el 100% de los frames)
+        // y el reinicio observado en hardware.
         const esp_isp_processor_cfg_t isp_cfg = {
             .clk_hz              = 80 * 1000 * 1000,
             .input_data_source   = ISP_INPUT_DATA_SOURCE_CSI,
-            .input_data_color_type  = ISP_COLOR_RAW8,
+            .input_data_color_type  = ISP_COLOR_RAW10,
             .output_data_color_type = ISP_COLOR_RGB565,
-            .has_line_start_packet  = true,   // OV5647_CSI_LINESYNC_ENABLE=y
+            .has_line_start_packet  = false,
             .has_line_end_packet    = false,
             .h_res       = FRAME_W,
             .v_res       = FRAME_H,
@@ -531,7 +582,7 @@ esp_err_t vision_init(void)
         }
         ESP_ERROR_CHECK(esp_isp_enable(isp_proc));
         ESP_ERROR_CHECK(esp_isp_demosaic_enable(isp_proc));
-        ESP_LOGI(TAG, "ISP enabled — demosaico RGB565 activo (RAW8 Bayer → RGB565)");
+        ESP_LOGI(TAG, "ISP enabled — demosaico RGB565 activo (RAW10 Bayer → RGB565)");
     }
 
     // -------------------------------------------------------------------------
@@ -546,7 +597,10 @@ esp_err_t vision_init(void)
     // 8. Tarea de captura y análisis
     //    Prioridad 4: menor que lidar_task (6) y proximity_task (5).
     // -------------------------------------------------------------------------
-    xTaskCreate(vision_task, "vision", 4096, NULL, 4, NULL);
+    // Pineada al core 1 junto con ocr_task — separada a propósito del core 0
+    // (mic_task/lidar_task, audio y UART en tiempo real). Ver nota de pinning
+    // en components/mic/mic.c.
+    xTaskCreatePinnedToCore(vision_task, "vision", 4096, NULL, 4, NULL, 1);
 
     ESP_LOGI(TAG, "initialized — %ux%u RGB565 @%ufps, step=%d, edge_thr=%d",
              selected->width, selected->height, selected->fps, STEP_X, EDGE_THRESHOLD);
@@ -573,4 +627,9 @@ bool vision_copy_display_frame(uint8_t *dst, size_t len)
     memcpy(dst, s_display_frame, FRAME_SZ);
     xSemaphoreGive(s_display_mutex);
     return true;
+}
+
+void vision_set_analysis_paused(bool paused)
+{
+    s_analysis_paused = paused;
 }

@@ -20,16 +20,22 @@ extern "C" {
 // reescala internamente a su tamaño de entrada fijo (736x736), así que
 // conviene aprovechar la resolución completa.
 //
-// La cámara está montada rotada respecto a la vista del usuario — se aplica
-// la misma corrección de orientación ya validada en hardware (rotar 90°CW +
-// espejar horizontal, equivalente a una transposición fila↔columna; ver
-// tools/monitor_viewer.py para la versión de referencia en Python).
+// Corrección de orientación: en el modo RAW10 binning 1280x960 (ver
+// components/vision/vision.c) comparar capturas reales contra la orientación
+// esperada mostró que hace falta un espejado vertical (arriba-abajo) — a
+// diferencia de los modos RAW8 anteriores, que necesitaban transposición
+// (rotar 90°CW + espejar horizontal). Mismos bits de mirror/flip del sensor
+// (0x3820/0x3821) en ambos casos; el binning 2x2 del OV5647 es conocido por
+// invertir el orden de barrido de píxeles respecto al modo sin binning, lo
+// que explica la diferencia. Si se vuelve a cambiar de modo de captura,
+// volver a verificar con una foto real (ver tools/monitor_viewer.py) antes de
+// asumir que esta corrección sigue siendo la correcta.
 // =============================================================================
 
 // Convierte un frame RGB565 de w×h píxeles (src) a RGB888 intercalado (dst),
-// con la corrección de orientación aplicada (transposición). La salida queda
-// con ancho y alto INTERCAMBIADOS respecto a la entrada: ancho_salida=h,
-// alto_salida=w. dst debe tener capacidad para w*h*3 bytes.
+// con la corrección de orientación aplicada (espejado vertical). La salida
+// mantiene el mismo ancho y alto que la entrada. dst debe tener capacidad
+// para w*h*3 bytes.
 void ocr_preprocess_rgb565_to_rgb888(const uint8_t *src, int w, int h, uint8_t *dst);
 
 #ifdef __cplusplus

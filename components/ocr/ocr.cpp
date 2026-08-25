@@ -66,11 +66,11 @@ static bool model_file_looks_valid(const char *filename)
 
 // ocr_preprocess_rgb565_to_rgb888 ya no hace downsampling (el ISP entrega
 // color real por píxel, ya no hace falta promediar bloques para debayer) —
-// solo intercambia ancho/alto al corregir la orientación (ver comentario en
-// ocr_preprocess.h), por eso acá quedan invertidos respecto al frame crudo
-// (VISION_FRAME_W x VISION_FRAME_H).
-static constexpr int kImgW = VISION_FRAME_H; // 640
-static constexpr int kImgH = VISION_FRAME_W; // 800
+// con el modo RAW10 binning actual la corrección de orientación es un
+// espejado horizontal puro (ver comentario en ocr_preprocess.h), así que las
+// dimensiones coinciden con el frame crudo (VISION_FRAME_W x VISION_FRAME_H).
+static constexpr int kImgW = VISION_FRAME_W; // 1280
+static constexpr int kImgH = VISION_FRAME_H; // 960
 
 // Mismo umbral que usa pp_ocr_v6::PPOCRV6 internamente para descartar
 // reconocimientos de baja confianza (no usamos PPOCRV6 directamente porque
@@ -115,6 +115,11 @@ static void ocr_task(void *arg)
         xSemaphoreTake(s_start_sem, portMAX_DELAY);
         s_reading = true;
         s_stop_req = false;
+        // Pausar la heurística de posición de vision_task durante la lectura:
+        // su resultado no se usa (proximity_task ignora vision mientras hay
+        // lectura OCR activa) y libera CPU/PSRAM para Det/Rec — ver
+        // vision_set_analysis_paused() en vision.h.
+        vision_set_analysis_paused(true);
         ESP_LOGI(TAG, "lectura iniciada");
 
         while (!s_stop_req) {
@@ -141,11 +146,20 @@ static void ocr_task(void *arg)
                 if (score >= kRecScoreThreshold && !text.empty()) {
                     tts_speak(text.c_str());
                 }
+                // El wrapper vendorizado PPOCRV6::run() cede CPU entre cajas
+                // (pp_ocr_v6.cpp) — este loop lo reimplementa manualmente para
+                // tener puntos de corte por s_stop_req (ver comentario arriba)
+                // y ese yield se había perdido. Sin él, una imagen con varias
+                // cajas de texto puede monopolizar la CPU sin ceder por
+                // suficiente tiempo como para inanir IDLE (ver crash de
+                // watchdog documentado en sentis.c/proximity_task).
+                vTaskDelay(1);
             }
 
             vTaskDelay(pdMS_TO_TICKS(400)); // cooldown entre ciclos de captura
         }
 
+        vision_set_analysis_paused(false);
         ESP_LOGI(TAG, "lectura detenida");
         s_reading = false;
     }
@@ -174,7 +188,9 @@ esp_err_t ocr_init(void)
     s_det = new pp_ocr_v6::Det();
     s_rec = new pp_ocr_v6::Rec();
 
-    BaseType_t ok = xTaskCreate(ocr_task, "ocr_reading", 32768, NULL, 3, NULL);
+    // Pineada al core 1 junto con vision_task — separada a propósito del core 0
+    // (mic_task/lidar_task). Ver nota de pinning en components/mic/mic.c.
+    BaseType_t ok = xTaskCreatePinnedToCore(ocr_task, "ocr_reading", 32768, NULL, 3, NULL, 1);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "no hay memoria para la tarea de lectura");
         delete s_det;

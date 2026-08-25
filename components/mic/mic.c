@@ -52,7 +52,12 @@ esp_err_t mic_init(mic_data_cb_t data_cb)
 
     s_data_cb = data_cb;
 
-    BaseType_t ok = xTaskCreate(mic_task, "mic", 4096, NULL, 6, &s_task);
+    // Pineada al core 0 junto con lidar_task — separada a propósito del core 1
+    // (vision_task/ocr_task), que corre inferencia pesada de OCR/visión y
+    // puede monopolizarlo por tramos largos. Ver crash de watchdog documentado
+    // en main/sentis.c (proximity_task): sin pinning, el scheduler podía
+    // colocar mic_task en el mismo core que la inferencia OCR.
+    BaseType_t ok = xTaskCreatePinnedToCore(mic_task, "mic", 4096, NULL, 6, &s_task, 0);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreate failed");
         s_task = NULL;

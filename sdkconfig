@@ -1467,7 +1467,7 @@ CONFIG_ESP_SR_EXTERNAL_MODEL_PATH=""
 #
 # SENTIS Monitor (solo desarrollo)
 #
-# CONFIG_MONITOR_ENABLED is not set
+CONFIG_MONITOR_ENABLED=y
 # end of SENTIS Monitor (solo desarrollo)
 
 #

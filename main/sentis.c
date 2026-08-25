@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "haptics.h"
 #include "lidar.h"
 #include "vision.h"
@@ -247,7 +248,18 @@ void app_main(void)
     }
 
     // Monitor visual solo para desarrollo (menuconfig → SENTIS Monitor).
-    // monitor_init();
+    // Deshabilitar (CONFIG_MONITOR_ENABLED=n) antes de un build de producción.
+    monitor_init();
+
+    // DIAGNÓSTICO TEMPORAL — margen real de PSRAM una vez que todos los
+    // componentes ya reservaron su memoria (modelos pp_ocr_v6, buffers de
+    // vision/ocr, TTS, STT, audio). Se usa para decidir si alcanza para subir
+    // la resolución de captura de la cámara (800x640 → 800x1280 RAW8, o
+    // RAW10 1280x960/1920x1080) sin quedarse sin memoria en tiempo de
+    // ejecución. Quitar una vez tomada la decisión.
+    ESP_LOGI("sentis", "PSRAM libre tras init: %u bytes (bloque contiguo mas grande: %u bytes)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     xTaskCreate(proximity_task, "proximity", 2048, NULL, 5, NULL);
 }

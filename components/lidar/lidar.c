@@ -181,7 +181,8 @@ esp_err_t lidar_init(void)
     ESP_ERROR_CHECK(uart_driver_install(BOARD_LIDAR_UART_NUM,
                                         UART_BUF_SIZE * 2, 0, 0, NULL, 0));
 
-    xTaskCreate(lidar_task, "lidar", 4096, NULL, 6, NULL);
+    // Pineada al core 0 junto con mic_task — ver nota de pinning en mic.c.
+    xTaskCreatePinnedToCore(lidar_task, "lidar", 4096, NULL, 6, NULL, 0);
     ESP_LOGI(TAG, "initialized UART%d  RX=GPIO%d (Verde)  TX=GPIO%d (Amarillo)",
              BOARD_LIDAR_UART_NUM,
              BOARD_LIDAR_UART_RX_GPIO,
