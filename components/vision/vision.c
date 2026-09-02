@@ -57,6 +57,13 @@ static const char *TAG = "vision";
 // Con STEP_X = 4 se procesa 1/4 del ancho real → tiempo equivalente a 200 col.
 #define STEP_X    4
 
+// Target de brillo del AE (rango 2-235, ver ov5647_set_AE_target). El default
+// del driver es 0x50=80 (~34% de escala) y en este modo de binning resultó
+// insuficiente en una habitación con buena luz — hacía falta linterna de
+// celular para exponer bien. Experimento: subirlo para forzar más exposición/
+// ganancia. Ajustar este valor si sale sobre o sub-expuesto.
+#define AE_TARGET 235
+
 // =============================================================================
 // Umbral de actividad de bordes
 //
@@ -411,6 +418,15 @@ esp_err_t vision_init(void)
 
     ESP_ERROR_CHECK(esp_cam_sensor_set_format(sensor, selected));
 
+    // set_format ya aplicó el AE target por defecto del driver (0x50) —
+    // lo subimos acá a AE_TARGET para forzar más exposición/ganancia (ver
+    // comentario del #define más arriba).
+    {
+        int ae_target = AE_TARGET;
+        ESP_ERROR_CHECK(esp_cam_sensor_set_para_value(sensor, ESP_CAM_SENSOR_EXPOSURE_VAL,
+                                                       &ae_target, sizeof(ae_target)));
+    }
+
     // -------------------------------------------------------------------------
     // 4. Controlador MIPI CSI-2
     //    h_res / v_res y lane_bit_rate_mbps salen del formato seleccionado
@@ -545,15 +561,15 @@ esp_err_t vision_init(void)
         // (esp_driver_cam/test_apps/csi/main/test_csi_ov5647.c,
         // examples/peripherals/camera/mipi_isp_dsi/main/mipi_isp_dsi_main.c)
         // resultaron insuficientes — sin este call la imagen sigue en gris.
-        // bayer_order: se mantiene RGGB, el mismo valor que ya funciona en
-        // hardware para los modos RAW8 anteriores (800x640/800x1280), aunque
-        // el driver del sensor declara internamente GBRG para todos los modos
-        // (ver ov5647_isp_info[] en ov5647.c) — el patrón real que ve el ISP
-        // depende también de los bits de mirror/flip que arma cada tabla de
-        // registros (0x3820/0x3821), no solo del bayer_type declarado. Si el
-        // color sale corrido (p.ej. tinte magenta/verde o canales R/B
-        // invertidos) en este modo de binning, es la primera config a probar
-        // con otro valor (BGGR/GRBG).
+        // bayer_order = GBRG (no RGGB): confirmado en hardware que RGGB —
+        // copiado de los modos RAW8 anteriores, donde sí funcionaba — produce
+        // color corrido en este modo de binning (rojo se lee verde, beige sale
+        // rojizo). GBRG es lo que declara ov5647_isp_info[4] en ov5647.c para
+        // este formato exacto (MIPI_2lane_24Minput_RAW10_1280x960_binning), y
+        // es consistente con el mismo desfase de fila que ya obligó a agregar
+        // el espejado vertical de este modo (ver mirror_rgb565() en
+        // monitor.c): el binning 2x2 reordena el barrido de píxeles en un eje,
+        // lo que corre el patrón Bayer una fila además de invertir filas.
         // has_line_start_packet = false: a diferencia de los modos RAW8 y del
         // RAW10 1920x1080 (que dejan el bit LINE_SYNC_ENABLE de 0x4800 en 1,
         // ej. {0x4800, 0x34}), la tabla de registros del binning 1280x960 lo
@@ -573,7 +589,7 @@ esp_err_t vision_init(void)
             .has_line_end_packet    = false,
             .h_res       = FRAME_W,
             .v_res       = FRAME_H,
-            .bayer_order = COLOR_RAW_ELEMENT_ORDER_RGGB,
+            .bayer_order = COLOR_RAW_ELEMENT_ORDER_GBRG,
         };
         ret = esp_isp_new_processor(&isp_cfg, &isp_proc);
         if (ret != ESP_OK) {

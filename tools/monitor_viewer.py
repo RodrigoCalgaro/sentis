@@ -123,7 +123,7 @@ def overlay_zone(frame_bgr, zone: int, stt_text: str) -> None:
 def main(port: str) -> None:
     print(f"Conectando a {port} ...")
     try:
-        ser = serial.Serial(port, 115200, timeout=0.5)
+        ser = serial.Serial(port, 921600, timeout=0.5)
     except serial.SerialException as e:
         print(f"Error: {e}")
         sys.exit(1)
