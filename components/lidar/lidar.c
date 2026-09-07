@@ -150,8 +150,14 @@ static void lidar_task(void *arg)
         // Trama válida: actualizar la distancia compartida y registrar en log.
         uint16_t dist_mm = sp10_distance_mm(f);
         s_distance_mm = dist_mm;
-
-        // ESP_LOGI(TAG, "dist=%u mm", dist_mm);
+        
+        uint16_t last_dist_mm = dist_mm;
+        // Solo loguear cambios significativos para no saturar el log.
+        // Se considera significativo un cambio mayor a ±100 mm (10 cm).
+        if ((last_dist_mm + 100) < dist_mm || (last_dist_mm - 100) > dist_mm) {
+            ESP_LOGI(TAG, "dist=%u mm", dist_mm);
+            last_dist_mm = dist_mm;
+        }
     }
 }
 
