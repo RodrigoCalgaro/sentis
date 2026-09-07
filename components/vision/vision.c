@@ -14,6 +14,7 @@
 #include "driver/isp_demosaic.h"
 #include "ov5647.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -62,6 +63,16 @@ static const char *TAG = "vision";
 // insuficiente en una habitación con buena luz — hacía falta linterna de
 // celular para exponer bien. Experimento: subirlo para forzar más exposición/
 // ganancia. Ajustar este valor si sale sobre o sub-expuesto.
+//
+// 235 (el máximo) causó watchdog timeout en IDLE1/CPU1 con vision_task
+// atascado sin ceder CPU (visto en dos puntos distintos del bucle de
+// vision_task — analyze_frame y el memcpy de display — la firma típica de
+// que el semáforo de frame se señaliza sin el hueco real de ~22ms entre
+// frames). Sospecha: ganancia al máximo degrada la señal MIPI en este modo de
+// binning, ya delicado (ver has_line_start_packet más abajo), y el
+// controlador CSI dispara "frame terminado" más seguido de lo real. Bajado a
+// un valor no probado entre el 180 estable y el 235 inestable — retestear
+// estabilidad (varios minutos, con OCR activo) antes de subirlo de nuevo.
 #define AE_TARGET 235
 
 // =============================================================================
@@ -208,8 +219,35 @@ static void vision_task(void *arg)
     static const char *side_names[] = {"NONE", "LEFT", "CENTER", "RIGHT"};
     // static int dbg_count = 0;  // solo usado por el log RGB565 comentado más abajo
 
+    // DIAG TEMPORAL — watchdog de IDLE1/CPU1 a los 25s exactos (=
+    // CONFIG_ESP_TASK_WDT_TIMEOUT_S) de iniciada la cámara, reproducible con
+    // AE_TARGET en 180/200/235 y con el monitor prendido o apagado. Para que
+    // IDLE1 nunca corra, vision_task (prioridad 4, core 1) tiene que estar
+    // siempre lista — es decir, xSemaphoreTake(s_frame_sem) casi nunca se
+    // bloquea de verdad. Este contador mide el ritmo real al que se
+    // señaliza el semáforo; si reporta muchísimo más que ~45/s, confirma que
+    // csi_trans_finished_cb se dispara sin esperar el hueco real entre
+    // frames del sensor. Quitar una vez confirmada/resuelta la causa.
+    uint32_t frame_count     = 0;
+    int64_t  last_report_us  = esp_timer_get_time();
+
     while (1) {
         if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
+            frame_count++;
+            int64_t now_us = esp_timer_get_time();
+            if (now_us - last_report_us >= 1000000) {
+                ESP_LOGW(TAG, "DIAG: %" PRIu32 " frames/s via semaforo (esperado ~45)", frame_count);
+                frame_count    = 0;
+                last_report_us = now_us;
+            }
+
+            // Yield defensivo: garantiza que IDLE1 tenga oportunidad de
+            // correr en cada vuelta, sea cual sea el ritmo real del DMA (ver
+            // nota de diagnóstico arriba). No corrige la causa de fondo si
+            // el semáforo se sobre-dispara — solo evita el crash de
+            // watchdog mientras se investiga.
+            vTaskDelay(1);
+
             // Mientras dura una lectura OCR, s_side no se consulta
             // (proximity_task lo ignora — ver ocr_is_reading() en
             // main/sentis.c), así que nos ahorramos el costo de CPU/PSRAM de

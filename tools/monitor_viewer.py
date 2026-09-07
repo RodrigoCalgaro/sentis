@@ -7,6 +7,7 @@ Instalacion (una sola vez):
     pip install pyserial opencv-python numpy
 
 Uso:
+    remove comment of CONFIG_MONITOR_ENABLED=y in sdkconfig
     python tools/monitor_viewer.py COM3          (Windows)
     python tools/monitor_viewer.py /dev/ttyACM1  (Linux)
 

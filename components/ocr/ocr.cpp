@@ -130,8 +130,25 @@ static void ocr_task(void *arg)
             ocr_preprocess_rgb565_to_rgb888(raw, VISION_FRAME_W, VISION_FRAME_H, rgb);
             if (s_stop_req) break;
 
+            // DIAG TEMPORAL — investigando un abort() en __cxa_allocate_exception
+            // visto tras ~46s de lectura continua, sin que "cajas detectadas"
+            // (más abajo) llegue a imprimirse ni una vez. Sospecha: una sola
+            // llamada a s_det->run() (vendorizado) nunca retorna, en vez de
+            // acumularse por muchos ciclos. Este "iniciando" antes del run()
+            // confirma si el problema está DENTRO de esa llamada. Quitar una
+            // vez confirmada/resuelta la causa.
+            ESP_LOGW(TAG, "DIAG: iniciando s_det->run()");
             auto boxes = s_det->run(img);
             ESP_LOGI(TAG, "%d caja(s) de texto detectadas", (int)boxes.size());
+            // DIAG TEMPORAL — investigando un abort() en __cxa_allocate_exception
+            // (throw sin CONFIG_COMPILER_CXX_EXCEPTIONS) visto tras ~46s de
+            // lectura continua. Sospecha: fragmentación de PSRAM por los
+            // vector<Box>/std::string reservados en cada ciclo. Este log deja
+            // ver si la PSRAM libre/bloque contiguo cae progresivamente ciclo
+            // a ciclo. Quitar una vez confirmada/resuelta la causa.
+            ESP_LOGW(TAG, "DIAG: PSRAM libre=%u bloque_max=%u",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
             if (s_stop_req) break;
 
             for (const auto &box : boxes) {
