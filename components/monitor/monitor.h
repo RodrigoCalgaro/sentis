@@ -2,15 +2,19 @@
 
 #include "esp_err.h"
 
-// Instala el driver USB Serial/JTAG con TX buffer de 64 KB y lanza monitor_task,
-// que encoda cada frame de la cámara a JPEG y lo transmite por el mismo puerto
-// USB que se usa para flashear y ver el console (idf.py monitor).
+// Instala el driver USB Serial/JTAG (puerto OTG nativo del ESP32-P4) con TX
+// buffer de 64 KB y lanza monitor_task, que encoda cada frame de la cámara a
+// JPEG y lo transmite por ESE puerto. Es un peripheral distinto del UART0 que
+// usa la consola de logs (idf.py flash / idf.py monitor) — requiere que el
+// secondary console de USB_SERIAL_JTAG esté deshabilitado en sdkconfig
+// (CONFIG_ESP_CONSOLE_SECONDARY_NONE=y) para que este driver sea el único
+// dueño del peripheral.
 //
 // Protocolo binario: magic(4) + size(4) + zone(1) + pad(1) + JPEG(N)
 // Ver tools/monitor_viewer.py para el visualizador en el PC.
 //
-// NOTA: monitor_viewer.py y idf.py monitor no pueden estar abiertos al mismo
-// tiempo (mismo COM port). Usar uno u otro según la tarea.
+// monitor_viewer.py (puerto OTG) e idf.py monitor (puerto UART0) son COM
+// ports distintos — pueden abrirse en simultáneo.
 //
 // Requiere CONFIG_MONITOR_ENABLED=y (menuconfig → SENTIS Monitor).
 // Si el flag está desactivado, retorna ESP_OK inmediatamente sin hacer nada.

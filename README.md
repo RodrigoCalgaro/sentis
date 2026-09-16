@@ -98,7 +98,18 @@ Maneja la comunicación con el sensor LiDAR SP10M01 a través de UART1. Implemen
 
 ## Compilación y flasheo
 
-Este proyecto usa ESP-IDF. Desde el directorio raíz del proyecto:
+### Prerequisitos
+
+- **ESP-IDF v6.0.1** exacto (esta placa es un ESP32-P4 rev v1.3, que necesita configuración específica de esta versión — ver `sdkconfig`).
+- Después de instalar/activar ESP-IDF v6.0.1 por primera vez en una máquina (o si se reinstala/actualiza esa instalación), correr **una sola vez**:
+
+  ```
+  tools\fix_esp_idf_isp_crash.bat
+  ```
+
+  Esto parchea un bug conocido del driver del ISP en ESP-IDF (`components/esp_driver_isp/src/isp_core.c`): el manejo de errores de sincronización del sensor de cámara hace prints bloqueantes dentro de una interrupción, lo que puede reiniciar el equipo bajo un glitch periódico e intermitente del sensor OV5647 en el modo de captura que usa este proyecto. El parche no toca nada de este repositorio — vive en la instalación de ESP-IDF de la máquina, así que hay que volver a correr el `.bat` cada vez que se instala ESP-IDF v6.0.1 en una máquina nueva. El script es seguro de correr más de una vez (detecta si ya está aplicado y no hace nada). Más contexto en el comentario del propio `tools/fix_esp_idf_isp_crash.ps1` y en `components/vision/vision.c`.
+
+Desde el directorio raíz del proyecto:
 
 ```bash
 # Configurar el target (solo la primera vez)

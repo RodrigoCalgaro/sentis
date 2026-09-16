@@ -208,6 +208,7 @@ void app_main(void)
 
     // ---- Fase 2: almacenamiento y audio ----
     storage_init();   // no fatal — logs error si no hay tarjeta
+
     audio_init();     // ES8311 + I2S0 full-duplex (TX playback + RX mic)
 
     if (storage_is_mounted()) {

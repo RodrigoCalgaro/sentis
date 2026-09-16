@@ -66,9 +66,21 @@ bool vision_is_ready(void);
 
 // Copia el último frame capturado (RGB565, 2 bytes/píxel) en dst. dst debe
 // tener capacidad para al menos VISION_FRAME_SZ bytes y estar en memoria
-// accesible por DMA. Bloquea hasta 50 ms esperando el mutex. Retorna false
-// si la cámara aún no capturó ningún frame o si dst/len son inválidos.
+// accesible por DMA. No bloquea (lee directo del buffer de captura ping-pong
+// vigente en ese instante). Retorna false si la cámara aún no capturó ningún
+// frame o si dst/len son inválidos.
 bool vision_copy_display_frame(uint8_t *dst, size_t len);
+
+// Como vision_copy_display_frame(), pero submuestrea por nearest-neighbor a
+// 1/scale de cada dimensión (scale=2 → 640x480) escribiendo directamente el
+// resultado reducido en dst, sin pasar por un buffer intermedio a resolución
+// completa. dst debe tener capacidad para al menos
+// (VISION_FRAME_W/scale) * (VISION_FRAME_H/scale) * 2 bytes.
+// VISION_FRAME_W y VISION_FRAME_H deben ser divisibles por scale.
+// Pensado para consumidores que solo necesitan una vista previa (ver
+// componente monitor) y no quieren pagar el costo de PSRAM de un frame
+// completo.
+bool vision_copy_display_frame_scaled(uint8_t *dst, size_t len, int scale);
 
 // Pausa (paused=true) o reanuda (paused=false) la heurística de posición
 // analyze_frame() dentro de vision_task, sin detener la captura CSI ni la

@@ -11,8 +11,12 @@ Uso:
     python tools/monitor_viewer.py COM3          (Windows)
     python tools/monitor_viewer.py /dev/ttyACM1  (Linux)
 
-El puerto es el mismo COM que usa idf.py monitor (USB Serial/JTAG del ESP32-P4).
-idf.py monitor y este script NO pueden estar abiertos al mismo tiempo.
+El puerto es el USB OTG nativo del ESP32-P4 (USB Serial/JTAG) — un COM
+DISTINTO del que usa idf.py monitor (que sigue en el UART0/bridge chip).
+Ambos pueden estar abiertos al mismo tiempo, en dos ventanas separadas.
+El baudrate pasado a pyserial es solo por compatibilidad de API: al ser
+USB nativo (no una UART real), el valor no afecta la velocidad real del
+enlace.
 
 Protocolo de framing — dos tipos de paquete:
 

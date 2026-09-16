@@ -3,6 +3,7 @@
 #include "bus.h"
 #include "driver/i2c_master.h"
 #include "esp_sccb_i2c.h"
+#include "esp_sccb_intf.h"
 #include "esp_cam_ctlr_csi.h"
 #include "esp_cam_ctlr.h"
 #include "esp_cam_sensor.h"
@@ -65,15 +66,19 @@ static const char *TAG = "vision";
 // ganancia. Ajustar este valor si sale sobre o sub-expuesto.
 //
 // 235 (el máximo) causó watchdog timeout en IDLE1/CPU1 con vision_task
-// atascado sin ceder CPU (visto en dos puntos distintos del bucle de
-// vision_task — analyze_frame y el memcpy de display — la firma típica de
-// que el semáforo de frame se señaliza sin el hueco real de ~22ms entre
-// frames). Sospecha: ganancia al máximo degrada la señal MIPI en este modo de
-// binning, ya delicado (ver has_line_start_packet más abajo), y el
-// controlador CSI dispara "frame terminado" más seguido de lo real. Bajado a
-// un valor no probado entre el 180 estable y el 235 inestable — retestear
-// estabilidad (varios minutos, con OCR activo) antes de subirlo de nuevo.
-#define AE_TARGET 235
+// atascado sin ceder CPU. Sospecha: ganancia al máximo degrada la señal MIPI
+// en este modo de binning, ya delicado (ver has_line_start_packet más abajo),
+// y el controlador CSI dispara "frame terminado" más seguido de lo real.
+//
+// RETEST 2026-09-08: con AE_TARGET=235, "ISP: fifo overflow" y el panic por
+// interrupt watchdog en CPU0 aparecen siempre al mismo tiempo exacto desde
+// que arranca la cámara (~28.5s), reproducible incluso con la arquitectura de
+// captura de doble buffer (ver s_frame_buf más arriba) que eliminó la
+// condición de carrera constante que había antes — la consistencia del
+// timing, independiente de cambios de software, es consistente con que sea
+// el AE convergiendo a ganancia máxima en vez de un bug de vision_task.
+// Volviendo a 180 (el valor documentado como estable) para confirmar.
+#define AE_TARGET 180
 
 // =============================================================================
 // Umbral de actividad de bordes
@@ -101,24 +106,69 @@ static const char *TAG = "vision";
 static i2c_master_bus_handle_t  s_i2c_bus    = NULL;
 static esp_sccb_io_handle_t     s_sccb_io    = NULL;
 static esp_cam_ctlr_handle_t    s_cam_ctrl   = NULL;
-static uint8_t                 *s_frame      = NULL;
 static SemaphoreHandle_t        s_frame_sem  = NULL;
+
+// -----------------------------------------------------------------------------
+// Doble buffer de captura (ping-pong) — reemplaza al buffer único + copia a
+// s_display_frame que tenía este archivo antes.
+//
+// Diagnóstico previo (medido en hardware): con un solo buffer de captura
+// (queue_items=1, sin doble buffer) el DMA del CSI reescribe el mismo buffer
+// sin parar, incluso mientras vision_task todavía lo está leyendo para
+// analyze_frame() y para la copia al buffer de display — una condición de
+// carrera en TODOS los frames, no ocasional. vision_task tarda ~40-100ms por
+// vuelta (analyze_frame + memcpy), varias veces más que el hueco real entre
+// frames del sensor (~22-33ms), así que la lectura nunca termina antes de que
+// el DMA vuelva a escribir encima. Esto explica tanto el "ISP: fifo overflow"
+// como el framerate muy por debajo del esperado — confirmado descartando por
+// evidencia de hardware: coexistencia de monitores, AE_TARGET, fps del sensor
+// (VTS) y el patrón de acceso de analyze_frame(), ninguno de los cuales tuvo
+// efecto por separado.
+//
+// s_frame_buf[2] resuelve la causa de raíz: dos buffers alternados, uno
+// siempre "en captura" (el DMA escribe ahí) y el otro "listo" (contiene el
+// último frame completo y estable). Los callbacks del driver CSI deciden el
+// destino de la PRÓXIMA captura en on_get_new_trans, que el driver llama
+// ANTES de on_trans_finished dentro del mismo evento ISR (confirmado leyendo
+// esp_cam_ctlr_csi.c: csi_dma_trans_done_callback llama primero
+// on_get_new_trans, arma el DMA con ese buffer, y recién después llama
+// on_trans_finished con el buffer que se acaba de completar) — por eso el
+// toggle de s_capture_idx vive en on_get_new_trans, no en on_trans_finished.
+//
+// s_ready_idx (el índice con el frame listo) es un entero volatile de una
+// sola palabra, sin mutex: el mismo patrón que ya usa este archivo para
+// s_side/s_ready. Como el buffer "listo" no vuelve a ser blanco del DMA hasta
+// completar un ciclo entero del otro buffer (~1 frame real, ~22-33ms según el
+// fps configurado), un lector que termine su copia dentro de ese margen no
+// puede pisarse con la próxima escritura — sin necesidad de un contador de
+// lectores. No es una garantía matemática absoluta bajo cualquier atraso de
+// software, pero elimina la carrera permanente que había antes (100% de los
+// frames) y no agrega PSRAM: mismo total que antes (s_frame + s_display_frame
+// = 2 × FRAME_SZ).
+// -----------------------------------------------------------------------------
+static uint8_t      *s_frame_buf[2]  = {NULL, NULL};
+static volatile int   s_capture_idx  = 0;   // buffer que el DMA está llenando (o va a llenar)
+static volatile int   s_ready_idx    = -1;  // buffer con el último frame completo; -1 = ninguno aún
 
 // Callbacks del driver CSI — llamados desde ISR, deben ser IRAM_ATTR.
 //
-// on_get_new_trans: el driver CSI llama esto en el ISR de cada frame para
-//   obtener el buffer de destino del DMA. Retornamos siempre el mismo buffer
-//   porque analizamos un frame a la vez.
+// on_get_new_trans: el driver llama esto ANTES de on_trans_finished (mismo
+//   evento) para decidir el destino de la PRÓXIMA captura — acá se hace el
+//   toggle del ping-pong, siempre hacia el buffer contrario al que se está
+//   por reportar terminado.
 //
-// on_trans_finished: el driver CSI llama esto cuando el DMA terminó de llenar
-//   el buffer. Señalizamos s_frame_sem para desbloquear vision_task.
-//   El valor de retorno indica si se despertó una tarea de mayor prioridad
-//   (para que FreeRTOS haga context switch al salir del ISR).
+// on_trans_finished: el driver llama esto con el buffer que el DMA acaba de
+//   terminar de llenar — por construcción del ping-pong, es el índice
+//   contrario al s_capture_idx recién actualizado por on_get_new_trans.
+//   Señalizamos s_frame_sem para desbloquear vision_task. El valor de retorno
+//   indica si se despertó una tarea de mayor prioridad (para que FreeRTOS
+//   haga context switch al salir del ISR).
 static IRAM_ATTR bool csi_get_new_trans_cb(esp_cam_ctlr_handle_t handle,
                                             esp_cam_ctlr_trans_t *trans,
                                             void *user_data)
 {
-    trans->buffer = s_frame;
+    s_capture_idx ^= 1;
+    trans->buffer = s_frame_buf[s_capture_idx];
     trans->buflen = FRAME_SZ;
     return false;
 }
@@ -127,6 +177,8 @@ static IRAM_ATTR bool csi_trans_finished_cb(esp_cam_ctlr_handle_t handle,
                                              esp_cam_ctlr_trans_t *trans,
                                              void *user_data)
 {
+    s_ready_idx = s_capture_idx ^ 1;
+
     BaseType_t high_task_woken = pdFALSE;
     xSemaphoreGiveFromISR(s_frame_sem, &high_task_woken);
     return high_task_woken == pdTRUE;
@@ -142,12 +194,6 @@ static volatile bool            s_ready = false;
 // la lee vision_task.
 static volatile bool s_analysis_paused = false;
 
-// Buffer de display para el monitor de desarrollo. vision_task copia s_frame
-// aquí después de cada análisis. El mutex garantiza que el monitor no lee
-// mientras se copia, y que vision_task no escribe mientras el monitor codifica.
-static uint8_t           *s_display_frame = NULL;
-static SemaphoreHandle_t  s_display_mutex = NULL;
-
 // Extrae un proxy de luminancia barato de un píxel RGB565 (RRRRRGGGGGGBBBBB)
 // usando solo el canal verde (6 bits, el más cercano a luma) — evita floats
 // y multiplicaciones, suficiente para la heurística de actividad de bordes.
@@ -155,6 +201,15 @@ static inline uint8_t rgb565_luma_proxy(uint16_t px)
 {
     return (uint8_t)(((px >> 5) & 0x3F) << 2);
 }
+
+// Scratch de una fila completa (RAM interna) para analyze_frame(). frame vive
+// en PSRAM: leerlo salteado (cada STEP_X píxeles) directo desde ahí rompe el
+// acceso en ráfaga — medido en hardware: ~39ms/frame, un orden de magnitud
+// más de lo esperado para ~307K muestras de aritmética simple, y suficiente
+// por sí solo (sumado al memcpy de display) para explicar el tope de ~10fps
+// medido vía DIAG. Mismo fix que vision_copy_display_frame_scaled(): traer la
+// fila completa con un memcpy secuencial y muestrear STEP_X ahí.
+static uint16_t s_analyze_row_scratch[FRAME_W];
 
 // -----------------------------------------------------------------------------
 // analyze_frame — heurística de posición por actividad de bordes horizontales.
@@ -173,11 +228,12 @@ static obstacle_side_t analyze_frame(const uint8_t *frame)
     uint32_t act[3] = {0};
 
     for (int y = 0; y < FRAME_H; y++) {
-        const uint16_t *row = (const uint16_t *)(frame + (size_t)y * FRAME_W * 2);
+        const uint16_t *src_row = (const uint16_t *)(frame + (size_t)y * FRAME_W * 2);
+        memcpy(s_analyze_row_scratch, src_row, (size_t)FRAME_W * 2);  // PSRAM->SRAM, secuencial
         // Paso de STEP_X para reducir carga; el borde se detecta igual porque
         // los cambios de intensidad en un borde real abarcan múltiples píxeles.
         for (int x = STEP_X; x < FRAME_W; x += STEP_X) {
-            int diff = (int)rgb565_luma_proxy(row[x]) - (int)rgb565_luma_proxy(row[x - STEP_X]);
+            int diff = (int)rgb565_luma_proxy(s_analyze_row_scratch[x]) - (int)rgb565_luma_proxy(s_analyze_row_scratch[x - STEP_X]);
             if (diff < 0) diff = -diff;
 
             int zone = x / zone_w;
@@ -219,77 +275,49 @@ static void vision_task(void *arg)
     static const char *side_names[] = {"NONE", "LEFT", "CENTER", "RIGHT"};
     // static int dbg_count = 0;  // solo usado por el log RGB565 comentado más abajo
 
-    // DIAG TEMPORAL — watchdog de IDLE1/CPU1 a los 25s exactos (=
-    // CONFIG_ESP_TASK_WDT_TIMEOUT_S) de iniciada la cámara, reproducible con
-    // AE_TARGET en 180/200/235 y con el monitor prendido o apagado. Para que
-    // IDLE1 nunca corra, vision_task (prioridad 4, core 1) tiene que estar
-    // siempre lista — es decir, xSemaphoreTake(s_frame_sem) casi nunca se
-    // bloquea de verdad. Este contador mide el ritmo real al que se
-    // señaliza el semáforo; si reporta muchísimo más que ~45/s, confirma que
-    // csi_trans_finished_cb se dispara sin esperar el hueco real entre
-    // frames del sensor. Quitar una vez confirmada/resuelta la causa.
+    // DIAG — cuenta cuántas veces se señaliza s_frame_sem por segundo. Con el
+    // doble buffer (ver comentario de s_frame_buf arriba) esto ya refleja el
+    // framerate real de captura, no la velocidad del software.
     uint32_t frame_count     = 0;
     int64_t  last_report_us  = esp_timer_get_time();
+    int64_t  analyze_us_sum  = 0;
 
     while (1) {
         if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(500)) == pdTRUE) {
             frame_count++;
-            int64_t now_us = esp_timer_get_time();
-            if (now_us - last_report_us >= 1000000) {
-                ESP_LOGW(TAG, "DIAG: %" PRIu32 " frames/s via semaforo (esperado ~45)", frame_count);
-                frame_count    = 0;
-                last_report_us = now_us;
-            }
 
             // Yield defensivo: garantiza que IDLE1 tenga oportunidad de
-            // correr en cada vuelta, sea cual sea el ritmo real del DMA (ver
-            // nota de diagnóstico arriba). No corrige la causa de fondo si
-            // el semáforo se sobre-dispara — solo evita el crash de
-            // watchdog mientras se investiga.
+            // correr en cada vuelta, sea cual sea el ritmo real del DMA.
             vTaskDelay(1);
 
-            // Mientras dura una lectura OCR, s_side no se consulta
-            // (proximity_task lo ignora — ver ocr_is_reading() en
-            // main/sentis.c), así que nos ahorramos el costo de CPU/PSRAM de
-            // analyze_frame() sobre el frame completo. La captura CSI y la
-            // copia al buffer de display siguen activas más abajo, para que
-            // vision_copy_display_frame() (que usa ocr_task) siga entregando
-            // frames frescos.
-            if (!s_analysis_paused) {
-                obstacle_side_t result = analyze_frame(s_frame);
-                s_side  = result;
-                s_ready = true;
-                ESP_LOGD(TAG, "frame ok — side=%s", side_names[result]);
-            } else {
-                s_ready = true;
+            int idx = s_ready_idx;
+            if (idx >= 0) {
+                // Mientras dura una lectura OCR, s_side no se consulta
+                // (proximity_task lo ignora — ver ocr_is_reading() en
+                // main/sentis.c), así que nos ahorramos el costo de CPU de
+                // analyze_frame() sobre el frame completo. La captura CSI
+                // sigue activa, para que vision_copy_display_frame() (que usa
+                // ocr_task) siga entregando frames frescos del buffer listo.
+                int64_t t_analyze_start = esp_timer_get_time();
+                if (!s_analysis_paused) {
+                    obstacle_side_t result = analyze_frame(s_frame_buf[idx]);
+                    s_side  = result;
+                    s_ready = true;
+                    ESP_LOGD(TAG, "frame ok — side=%s", side_names[result]);
+                } else {
+                    s_ready = true;
+                }
+                analyze_us_sum += esp_timer_get_time() - t_analyze_start;
             }
 
-            // DEBUG TEMPORAL: verificar si el ISP realmente entrega color
-            // real (R!=G!=B por píxel) o si sigue siendo gris de facto pese
-            // a la config RGB565 — bypassa JPEG/UART/Python por completo.
-            // Loguea 1 vez cada ~50 frames (~1s a 50fps) para no saturar.
-            // Comentado: ya verificado en hardware, ensuciaba demasiado el
-            // monitor serie (mismo criterio que el log de distancia en lidar.c).
-            // if (++dbg_count >= 50) {
-            //     dbg_count = 0;
-            //     const uint16_t *px = (const uint16_t *)s_frame;
-            //     ESP_LOGI(TAG, "RGB565 raw samples:");
-            //     for (int i = 0; i < 5; i++) {
-            //         int idx = (FRAME_H / 2) * FRAME_W + (FRAME_W / 2) + i * 7;
-            //         uint16_t v = px[idx];
-            //         uint8_t r = (uint8_t)(((v >> 11) & 0x1F) << 3);
-            //         uint8_t g = (uint8_t)(((v >> 5)  & 0x3F) << 2);
-            //         uint8_t b = (uint8_t)(( v         & 0x1F) << 3);
-            //         ESP_LOGI(TAG, "  px[%d]=0x%04X -> R=%d G=%d B=%d", idx, v, r, g, b);
-            //     }
-            // }
-
-            // Copia no bloqueante al buffer de display para el monitor WiFi.
-            // Si el monitor está codificando (mutex tomado), se omite este frame.
-            if (s_display_frame &&
-                xSemaphoreTake(s_display_mutex, 0) == pdTRUE) {
-                memcpy(s_display_frame, s_frame, FRAME_SZ);
-                xSemaphoreGive(s_display_mutex);
+            int64_t now_us = esp_timer_get_time();
+            if (now_us - last_report_us >= 1000000) {
+                ESP_LOGI(TAG, "%" PRIu32 " frames/s | analyze=%" PRId64 "us/frame",
+                         frame_count,
+                         frame_count ? analyze_us_sum / frame_count : 0);
+                frame_count     = 0;
+                analyze_us_sum  = 0;
+                last_report_us  = now_us;
             }
         } else {
             ESP_LOGW(TAG, "frame timeout");
@@ -456,6 +484,48 @@ esp_err_t vision_init(void)
 
     ESP_ERROR_CHECK(esp_cam_sensor_set_format(sensor, selected));
 
+    // -------------------------------------------------------------------------
+    // Override manual de VTS — bajar el fps real del sensor sin cambiar
+    // resolución ni binning.
+    //
+    // El modo RAW10 1280×960 binning viene fijo a 45fps en el driver del
+    // OV5647 (ov5647_input_24M_MIPI_2lane_raw10_1280x960_45fps) — no existe
+    // en el driver una variante de esta misma resolución a menor fps. A ese
+    // pixel-rate (1280×960×45 ≈ 55.3 Mpx/s, más del doble que el modo
+    // 800×640@50fps original ≈25.6 Mpx/s) el bus de PSRAM del P4 no sostiene
+    // el drenado del ISP en tiempo real: confirmado en hardware como
+    // "ISP: fifo overflow" y frames/s muy por debajo de lo esperado (~9-10 en
+    // vez de 45), reproducible incluso con OCR y el monitor de desarrollo
+    // desactivados — descartando ambos como causa. El salto de resolución del
+    // commit b83183e (800×640 RAW8 → 1280×960 RAW10) es el origen real.
+    //
+    // fps = PCLK / (HTS × VTS). El sensor entrega PCLK=88.333.333 Hz y
+    // HTS=1796 fijos para este modo (mismo timing de línea/pixel clock,
+    // mismo binning) — la única perilla disponible sin tocar la ventana de
+    // captura es VTS (líneas de blanking vertical): agrandarlo estira el
+    // tiempo entre frames sin cambiar el ancho de banda instantáneo durante
+    // las líneas activas.
+    //   VTS original = 1093 (0x0445) → 45.0 fps
+    //   VTS nuevo    = 1640 (0x0668) → 30.0 fps (pixel-rate ≈ 36.9 Mpx/s, -33%)
+    // Registros 0x380e/0x380f (VTS hi/lo) — los mismos que usa la tabla de
+    // init del driver — se sobreescriben acá después de set_format() porque
+    // no hay una entrada de formato distinta para pedir esto vía API.
+    //
+    // PRIMER EXPERIMENTO, sin validar aún en hardware: si el fifo overflow
+    // persiste a 30fps, bajar VTS_TARGET_FPS más (probar ~20-24fps) antes de
+    // descartar esta vía.
+    // -------------------------------------------------------------------------
+    {
+        const uint32_t PCLK_HZ  = 88333333;
+        const uint16_t HTS      = 1796;
+        const uint32_t VTS_TARGET_FPS = 30;
+        uint16_t vts = (uint16_t)((PCLK_HZ + (HTS * VTS_TARGET_FPS) / 2) / (HTS * VTS_TARGET_FPS));
+        ESP_ERROR_CHECK(esp_sccb_transmit_reg_a16v8(s_sccb_io, 0x380e, (uint8_t)(vts >> 8)));
+        ESP_ERROR_CHECK(esp_sccb_transmit_reg_a16v8(s_sccb_io, 0x380f, (uint8_t)(vts & 0xFF)));
+        ESP_LOGI(TAG, "VTS override: 1093 -> %u líneas (fps real objetivo: %"PRIu32", era 45)",
+                 vts, VTS_TARGET_FPS);
+    }
+
     // set_format ya aplicó el AE target por defecto del driver (0x50) —
     // lo subimos acá a AE_TARGET para forzar más exposición/ganancia (ver
     // comentario del #define más arriba).
@@ -519,25 +589,14 @@ esp_err_t vision_init(void)
 #endif
 
     // -------------------------------------------------------------------------
-    // 5. Buffer de display para el monitor WiFi (solo desarrollo)
-    //    Mismo tamaño que s_frame. Si no hay PSRAM suficiente, simplemente no
-    //    se habilita el monitor — el resto del sistema sigue funcionando.
-    // -------------------------------------------------------------------------
-    s_display_mutex = xSemaphoreCreateMutex();
-    if (s_display_mutex) {
-        s_display_frame = heap_caps_malloc(FRAME_SZ,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-        if (!s_display_frame) {
-            ESP_LOGW(TAG, "sin PSRAM para display frame — monitor WiFi deshabilitado");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // 5. Semáforo de frame y buffer en PSRAM
+    // 5. Semáforo de frame y doble buffer de captura en PSRAM
     //    El semáforo sincroniza el ISR (csi_trans_finished_cb) con vision_task.
-    //    El buffer debe asignarse antes de registrar los callbacks porque
-    //    csi_get_new_trans_cb lo referencia desde el primer frame.
-    //    1280×960 RGB565 = 2.457.600 bytes — requiere PSRAM.
+    //    Los buffers deben asignarse antes de registrar los callbacks porque
+    //    csi_get_new_trans_cb los referencia desde el primer frame.
+    //    1280×960 RGB565 = 2.457.600 bytes por buffer — mismo total de PSRAM
+    //    que antes (2 × FRAME_SZ), solo que ahora ambos cumplen el rol de
+    //    captura+display en vez de un buffer de captura + una copia aparte
+    //    (ver comentario de s_frame_buf más arriba).
     // -------------------------------------------------------------------------
     s_frame_sem = xSemaphoreCreateBinary();
     if (!s_frame_sem) {
@@ -545,15 +604,17 @@ esp_err_t vision_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_frame = heap_caps_malloc(FRAME_SZ, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-    if (!s_frame) {
-        ESP_LOGW(TAG, "PSRAM no disponible, intentando SRAM interna (%d bytes)", FRAME_SZ);
-        s_frame = heap_caps_malloc(FRAME_SZ, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    }
-    if (!s_frame) {
-        ESP_LOGE(TAG, "sin memoria para el frame buffer (%d bytes) — "
-                      "habilitar PSRAM en menuconfig", FRAME_SZ);
-        return ESP_ERR_NO_MEM;
+    for (int i = 0; i < 2; i++) {
+        s_frame_buf[i] = heap_caps_malloc(FRAME_SZ, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+        if (!s_frame_buf[i]) {
+            ESP_LOGW(TAG, "PSRAM no disponible para frame_buf[%d], intentando SRAM interna (%d bytes)", i, FRAME_SZ);
+            s_frame_buf[i] = heap_caps_malloc(FRAME_SZ, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        }
+        if (!s_frame_buf[i]) {
+            ESP_LOGE(TAG, "sin memoria para frame_buf[%d] (%d bytes) — "
+                          "habilitar PSRAM en menuconfig", i, FRAME_SZ);
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -634,6 +695,30 @@ esp_err_t vision_init(void)
             ESP_LOGE(TAG, "ISP init failed: %s", esp_err_to_name(ret));
             return ret;
         }
+
+        // NOTA sobre el glitch periódico de sincronía de línea (~cada 27-29s,
+        // ver comentario de has_line_start_packet arriba): dispara
+        // ISP_LL_EVENT_DATA_TYPE_ERR / ASYNC_FIFO_OVF / BUF_FULL en el ISP.
+        //
+        // Se probó deshabilitar la interrupción de esos eventos a nivel de
+        // registro (isp_ll_enable_intr(..., ISP_LL_EVENT_ERROR_MASK, false))
+        // para evitar el aluvión de ESP_EARLY_LOGE que causaba el watchdog de
+        // interrupciones — pero eso también evita que se limpie el flag de
+        // estado en el hardware (isp_hal_check_clear_intr_event, al inicio
+        // del ISR, se ejecuta siempre, pero nunca corre si la interrupción
+        // está enmascarada). Confirmado en hardware: la cámara se congeló por
+        // completo la primera vez que ocurrió el glitch ("vision: frame
+        // timeout" indefinido) — peor que el crash original. Revertido.
+        //
+        // El fix real está en el propio ESP-IDF instalado en esta máquina
+        // (C:\esp\v6.0.1\esp-idf\components\esp_driver_isp\src\isp_core.c,
+        // no en managed_components/ de este proyecto) — se sacaron ahí los
+        // ESP_EARLY_LOGE bloqueantes de la rama de error, dejando la
+        // limpieza del registro intacta. Ver comentario en ese archivo.
+        // Ese parche vive fuera del repositorio del proyecto — si se
+        // reinstala o actualiza ESP-IDF v6.0.1, hay que reaplicarlo (ver
+        // [[vision-pipeline-esp32p4-v1x]] en la memoria del proyecto).
+
         ESP_ERROR_CHECK(esp_isp_enable(isp_proc));
         ESP_ERROR_CHECK(esp_isp_demosaic_enable(isp_proc));
         ESP_LOGI(TAG, "ISP enabled — demosaico RGB565 activo (RAW10 Bayer → RGB565)");
@@ -674,12 +759,48 @@ bool vision_is_ready(void)
     return s_ready;
 }
 
+// Ambas funciones de copia leen directo del buffer ping-pong (ver comentario
+// de s_frame_buf más arriba) en vez de una copia aparte — el índice "listo"
+// se captura una sola vez al entrar para no leer a mitad de camino un cambio
+// de s_ready_idx hecho por el ISR.
 bool vision_copy_display_frame(uint8_t *dst, size_t len)
 {
-    if (!dst || len < FRAME_SZ || !s_display_frame || !s_ready) return false;
-    if (xSemaphoreTake(s_display_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
-    memcpy(dst, s_display_frame, FRAME_SZ);
-    xSemaphoreGive(s_display_mutex);
+    int idx = s_ready_idx;
+    if (!dst || len < FRAME_SZ || idx < 0 || !s_ready) return false;
+    memcpy(dst, s_frame_buf[idx], FRAME_SZ);
+    return true;
+}
+
+// Scratch de una fila completa (RAM interna) para el submuestreo por columnas.
+// s_frame_buf[] vive en PSRAM: leerlo con stride (un píxel sí, uno no) directo
+// desde ahí rompe el acceso en ráfaga y satura el bus de PSRAM, compitiendo
+// con el DMA del ISP que está recibiendo píxeles del sensor en tiempo real
+// (visto en hardware: "ISP: fifo overflow" bajo esa carga). Por eso cada fila
+// se trae completa con un memcpy secuencial a esta fila de scratch, y el
+// descarte de columnas ocurre ahí (RAM interna, sin costo de bus) antes de
+// escribir — también secuencial — al destino.
+static uint16_t s_scale_row_scratch[FRAME_W];
+
+bool vision_copy_display_frame_scaled(uint8_t *dst, size_t len, int scale)
+{
+    int idx = s_ready_idx;
+    if (!dst || scale < 1 || idx < 0 || !s_ready) return false;
+    if (FRAME_W % scale != 0 || FRAME_H % scale != 0) return false;
+    int out_w = FRAME_W / scale;
+    int out_h = FRAME_H / scale;
+    size_t need = (size_t)out_w * out_h * 2;
+    if (len < need) return false;
+
+    const uint8_t *src_frame = s_frame_buf[idx];
+    uint16_t *dst16 = (uint16_t *)dst;
+    for (int y = 0; y < out_h; y++) {
+        const uint16_t *src_row = (const uint16_t *)(src_frame + (size_t)(y * scale) * FRAME_W * 2);
+        memcpy(s_scale_row_scratch, src_row, (size_t)FRAME_W * 2);  // PSRAM->SRAM, secuencial
+        uint16_t *dst_row = dst16 + (size_t)y * out_w;
+        for (int x = 0; x < out_w; x++) {
+            dst_row[x] = s_scale_row_scratch[x * scale];  // SRAM->PSRAM, dst secuencial
+        }
+    }
     return true;
 }
 
