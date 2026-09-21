@@ -1,11 +1,18 @@
 #include "tts.h"
 #include "audio.h"
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
 #include "espeak-ng/speak_lib.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <string.h>
+
+// Particion/punto de montaje de los datos de voz — ver partitions.csv y
+// components/tts/voice_data/. Imagen FAT de solo lectura generada en build
+// time (fatfs_create_rawflash_image, components/tts/CMakeLists.txt).
+#define VOICE_DATA_MOUNT_POINT   "/voice_data"
+#define VOICE_DATA_PARTITION     "voice_data"
 
 static const char *TAG = "tts";
 static bool     s_initialized  = false;
@@ -56,14 +63,30 @@ static int synth_callback(short *wav, int numsamples, espeak_EVENT *events)
 // =============================================================================
 // tts_init
 // =============================================================================
-esp_err_t tts_init(const char *data_path)
+esp_err_t tts_init(void)
 {
+    // Particion de solo lectura, sin wear-levelling (los datos nunca se
+    // escriben en tiempo de ejecucion) — pareja con
+    // fatfs_create_rawflash_image() del lado build (components/tts/CMakeLists.txt).
+    static const esp_vfs_fat_mount_config_t mount_config = {
+        .max_files = 4,
+    };
+    esp_err_t mount_ret = esp_vfs_fat_spiflash_mount_ro(VOICE_DATA_MOUNT_POINT,
+                                                          VOICE_DATA_PARTITION,
+                                                          &mount_config);
+    if (mount_ret != ESP_OK) {
+        ESP_LOGE(TAG, "no se pudo montar la particion '%s' en %s: %s",
+                 VOICE_DATA_PARTITION, VOICE_DATA_MOUNT_POINT, esp_err_to_name(mount_ret));
+        return mount_ret;
+    }
+
     s_resamp_phase = 0;
 
-    int sample_rate = espeak_Initialize(AUDIO_OUTPUT_SYNCHRONOUS, 0, data_path, 0);
+    int sample_rate = espeak_Initialize(AUDIO_OUTPUT_SYNCHRONOUS, 0, VOICE_DATA_MOUNT_POINT, 0);
     if (sample_rate < 0) {
-        ESP_LOGE(TAG, "espeak_Initialize failed — verificar que existen los archivos "
-                       "en %s (ejecutar scripts/setup_espeak.ps1)", data_path);
+        ESP_LOGE(TAG, "espeak_Initialize failed — verificar que %s tiene los archivos "
+                       "esperados (ejecutar scripts/setup_espeak.ps1 y volver a compilar)",
+                 VOICE_DATA_MOUNT_POINT);
         return ESP_FAIL;
     }
 
@@ -85,7 +108,7 @@ esp_err_t tts_init(const char *data_path)
     espeak_ERROR err = espeak_SetVoiceByName("roa/es");
     if (err != EE_OK) {
         ESP_LOGE(TAG, "espeak_SetVoiceByName('roa/es') error %d — "
-                       "verificar que lang/roa/es existe en %s", err, data_path);
+                       "verificar que %s/lang/roa/es existe", err, VOICE_DATA_MOUNT_POINT);
         return ESP_FAIL;
     }
 

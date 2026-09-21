@@ -9,7 +9,6 @@
 #include "lidar.h"
 #include "vision.h"
 #include "monitor.h"
-#include "storage.h"
 #include "audio.h"
 #include "mic.h"
 #include "tts.h"
@@ -175,21 +174,23 @@ static void proximity_task(void *arg)
 //    3. wifi_init     — C6 (esp_hosted/SDIO) + SoftAP para la app companion
 //    4. cp_ota_check_and_update — actualiza el firmware del C6 si hace falta
 //    5. link_init     — servidor TCP hacia la app companion (Fase 2)
-//    6. storage_init  — SDMMC 4-bit → FAT VFS en /sdcard (Fase 2)
-//    7. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
+//    6. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
 //                       Abre TX (playback) y RX (micrófono) en el mismo I2S0.
-//    8. tts_init      — carga voz eSpeak-NG desde SD (Fase 6A)
-//                       Reproduce "Sentis Encendido" como confirmación de arranque.
-//    9. mic_init      — tarea de captura: ES8311 ADC → chunks mono → link_send_audio()
-//   10. vision_init   — I2C + MIPI CSI-2 (Fase 5)
-//   11. ocr_init      — captura+JPEG, pedido de lectura vía app companion (Fase 2)
-//   12. monitor_init  — transmisión de frames para desarrollo (Fase 5)
-//   13. proximity_task — fusiona LiDAR + visión + háptica
+//    7. tts_init      — monta partición de flash "voice_data" y carga voz
+//                       eSpeak-NG (Fase 6A / Fase 2). Reproduce "Sentis
+//                       Encendido" como confirmación de arranque.
+//    8. mic_init      — tarea de captura: ES8311 ADC → chunks mono → link_send_audio()
+//    9. vision_init   — I2C + MIPI CSI-2 (Fase 5)
+//   10. ocr_init      — captura+JPEG, pedido de lectura vía app companion (Fase 2)
+//   11. monitor_init  — transmisión de frames para desarrollo (Fase 5)
+//   12. proximity_task — fusiona LiDAR + visión + háptica
 //
 // Fase 2 (ver sentis-stability-integration-plan.md): el reconocimiento de voz
 // (antes ESP-SR/MultiNet7, inglés-only) y el OCR (antes pp_ocr_v6, crasheaba
 // tras ~46s) se retiraron por completo del ESP32 — ahora corren en la app
-// Android companion (Vosk + ML Kit), conectada por el SoftAP del C6.
+// Android companion (Vosk + ML Kit), conectada por el SoftAP del C6. La SD
+// ya no se monta: ni TTS (datos en flash) ni ningún otro componente activo
+// la necesitan — ver components/storage/ si hace falta reactivarla.
 // -----------------------------------------------------------------------------
 void app_main(void)
 {
@@ -240,23 +241,23 @@ void app_main(void)
     // esto deshabilitado para aislar esa causa.
     link_init(on_link_command);
 
-    // ---- Fase 2: almacenamiento y audio ----
-    storage_init();   // no fatal — logs error si no hay tarjeta
-
+    // ---- Fase 2: audio ----
+    // La SD ya no se monta acá: el sonido de alerta de arranque (alert.wav)
+    // se sacó por completo (dejó de tener sentido una vez que "Sentis
+    // Encendido" por TTS ya confirma que el audio funciona), y los datos de
+    // voz de TTS se migraron a flash (ver más abajo) — storage_init() no
+    // tiene ya ningún consumidor en el firmware activo. Queda disponible en
+    // components/storage/ para si hace falta SD a futuro (ver el conflicto
+    // conocido SDMMC-vs-esp_hosted documentado ahí).
     audio_init();     // ES8311 + I2S0 full-duplex (TX playback + RX mic)
 
-    if (storage_is_mounted()) {
-        audio_play_wav("/sdcard/alert.wav");
-    }
-
-    // ---- Fase 6A: TTS en español (eSpeak-NG desde SD) ----
-    // tts_init carga los datos de voz desde /sdcard/espeak-ng-data/.
-    // No fatal: si los archivos no están en la SD, se loguea el error
-    // y el sistema sigue operando sin TTS.
-    if (storage_is_mounted()) {
-        if (tts_init("/sdcard/espeak-ng-data") == ESP_OK) {
-            tts_speak("Sentis Encendido");
-        }
+    // ---- Fase 6A / Fase 2: TTS en español (eSpeak-NG desde flash) ----
+    // tts_init monta la partición "voice_data" (imagen FAT de solo lectura,
+    // ver components/tts/voice_data/ y partitions.csv) y carga los datos de
+    // voz desde ahí. No fatal: si algo falla, se loguea el error y el
+    // sistema sigue operando sin TTS.
+    if (tts_init() == ESP_OK) {
+        tts_speak("Sentis Encendido");
     }
 
     // ---- Fase 2: micrófono → app companion ----

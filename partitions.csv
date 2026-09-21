@@ -18,8 +18,20 @@
 #   version). Subtype 0x40 = particion de datos generica cruda (mismo
 #   convenio que usa el ejemplo oficial de Espressif para este caso).
 #
-# Name,     Type, SubType, Offset,    Size
-nvs,        data, nvs,     0x9000,    0x6000
-phy_init,   data, phy,     0xf000,    0x1000
-factory,    app,  factory, 0x10000,   0x600000
-slave_fw,   data, 0x40,    0x610000,  0x200000
+# voice_data (2026-09-21, Fase 2): datos de voz de eSpeak-NG (solo espanol,
+#   ver components/tts/voice_data/), migrados de la SD a flash porque la SD
+#   no puede montarse con el radio del C6 activo (conflicto de controlador
+#   SDMMC/SDIO, ver project_wifi_companion_app.md) y ya no queda ningun otro
+#   consumidor de la SD en el firmware activo. Imagen FAT de solo lectura
+#   generada en build time por fatfs_create_rawflash_image (ver
+#   components/tts/CMakeLists.txt), montada con esp_vfs_fat_spiflash_mount_ro
+#   (sin wear-levelling, no hace falta para datos que nunca se escriben).
+#   718 KB de datos reales -- 1 MB deja margen para crecer sin volver a
+#   tocar esta tabla.
+#
+# Name,       Type, SubType, Offset,    Size
+nvs,          data, nvs,     0x9000,    0x6000
+phy_init,     data, phy,     0xf000,    0x1000
+factory,      app,  factory, 0x10000,   0x600000
+slave_fw,     data, 0x40,    0x610000,  0x200000
+voice_data,   data, fat,     0x810000,  0x100000
