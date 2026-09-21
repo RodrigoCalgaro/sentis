@@ -3,6 +3,9 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "haptics.h"
+#include "wifi.h"
+#include "cp_ota.h"
+#include "link.h"
 #include "lidar.h"
 #include "vision.h"
 #include "monitor.h"
@@ -75,6 +78,22 @@ static void on_stt_result(const stt_result_t *result)
         default:
             break;
     }
+}
+
+// -----------------------------------------------------------------------------
+// on_link_command — callback invocada por el componente link cuando llega un
+// comando de voz reconocido desde la app Android companion (Vosk, del lado
+// del celular).
+//
+// MILESTONE 2 (en validación, ver plan de migración OCR+STT a app
+// companion): solo logea por ahora — el despacho real (reemplazar
+// on_stt_result / stt_init+mic_init por esto) es un paso siguiente
+// separado, todavía no hecho. Se llama desde la tarea de recepción de
+// link — no bloquear aquí (mismo criterio que on_stt_result).
+// -----------------------------------------------------------------------------
+static void on_link_command(const link_command_t *cmd)
+{
+    ESP_LOGI("link", "COMANDO (app): [%d] \"%s\"", cmd->command_id, cmd->text);
 }
 
 // -----------------------------------------------------------------------------
@@ -205,6 +224,38 @@ void app_main(void)
     haptic_set_pattern(HAPTIC_PATTERN_OFF);
 
     lidar_init();
+
+    // ---- MILESTONE 0 (en validación): SoftAP para la app companion ----
+    // wifi_init() levanta el ESP32-C6 (esp_hosted, SDIO) + SoftAP. Se llama
+    // ANTES de storage_init(): hay un bug conocido de ESP-IDF (issue #16233)
+    // donde SDMMC (SD) y esp_hosted (también SDIO) se pisan si se inicializan
+    // en el orden contrario en el mismo controlador. No fatal: si el C6 no
+    // responde, se loguea el error y el resto del sistema sigue igual que
+    // hoy (sin WiFi, sin cambios de comportamiento).
+    esp_err_t wifi_ret = wifi_init();
+
+    // ---- Actualizar firmware del co-procesador C6 si hace falta ----
+    // El C6 de esta placa vino de fábrica con firmware genérico ("major
+    // version mismatch — OTA coprocessor from host" en el log, versión
+    // reportada 0.0.0) — sospechoso de varios problemas encontrados en
+    // hardware real (2026-09-18: WiFi intermitente, cámara sin frames).
+    // Requiere que wifi_init() haya levantado el link con el C6. No fatal:
+    // si la partición "slave_fw" está vacía (placa sin provisionar) o el
+    // OTA falla, se loguea y el sistema sigue con lo que ya tenga el C6.
+    if (wifi_ret == ESP_OK) {
+        cp_ota_check_and_update();
+    }
+
+    // ---- MILESTONE 2 (en validación): protocolo hacia la app companion ----
+    // link_init() levanta el servidor TCP (puerto components/link/link.h,
+    // LINK_TCP_PORT) sobre el SoftAP. Todavía no está conectado a mic/ocr
+    // reales — corre una tarea de autotest temporal (ver link.c) para
+    // validar el protocolo con tools/link_test_client.py. No fatal.
+    // DIAGNOSTICO TEMPORAL (2026-09-18): comentado para aislar si el trafico
+    // activo de link (audio 1/s + JPEG 10s del autotest) es lo que rompe la
+    // camara, o si alcanza con que esp_hosted este arriba sin trafico. Volver
+    // a habilitar despues de la prueba.
+    // link_init(on_link_command);
 
     // ---- Fase 2: almacenamiento y audio ----
     storage_init();   // no fatal — logs error si no hay tarjeta

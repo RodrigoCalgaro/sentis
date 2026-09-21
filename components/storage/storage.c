@@ -31,6 +31,22 @@ static const char *TAG = "storage";
 
 static bool s_mounted = false;
 
+#if CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO
+// El controlador SDMMC en ESP32-P4/ESP-IDF v6.x solo se puede inicializar
+// UNA vez — y esp_hosted (WiFi, ver components/wifi) ya lo hizo antes de que
+// storage_init() corra (wifi_init() se llama primero en main/sentis.c).
+// Si dejamos que esp_vfs_fat_sdmmc_mount() vuelva a llamar sdmmc_host_init(),
+// falla con "no available sd host controller" aunque el WiFi haya subido
+// bien — confirmado en hardware real (2026-09-18). Mismo workaround que usa
+// el ejemplo oficial de Espressif para esta combinacion exacta
+// (esp-hosted-mcu examples/mcu_hosted_sdio_sdmmc_combined/.../
+// sd_card_functions.c, WORKAROUND_HOSTED_DOES_SDMMC_HOST_INIT): pasarle
+// funciones init/deinit dummy al host, ya que el controlador compartido ya
+// esta arriba.
+static esp_err_t sdmmc_host_init_noop(void) { return ESP_OK; }
+static esp_err_t sdmmc_host_deinit_noop(void) { return ESP_OK; }
+#endif
+
 esp_err_t storage_init(void)
 {
     esp_err_t ret;
@@ -56,6 +72,10 @@ esp_err_t storage_init(void)
     // -------------------------------------------------------------------------
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.pwr_ctrl_handle = pwr_ctrl_handle;
+#if CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO
+    host.init = &sdmmc_host_init_noop;
+    host.deinit = &sdmmc_host_deinit_noop;
+#endif
 
     // -------------------------------------------------------------------------
     // 3. Slot 0 en modo 4-bit con los pines del board

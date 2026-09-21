@@ -12,7 +12,16 @@
 # /sdcard/models/p4/) en lugar de una partición flash, eliminando esa restricción
 # de tamaño. Ver sdcard_files/README.md.
 #
+# slave_fw (2026-09-18): binario del firmware del co-procesador ESP32-C6
+#   (ver carpeta coprocessor/, proyecto ESP-IDF separado target esp32c6).
+#   El C6 de fabrica reporta version "0.0.0" (no es un release valido de
+#   esp_hosted) -- se sube el binario correcto ahi y components/cp_ota lo
+#   empuja al C6 via OTA sobre SDIO en cada boot (no-op si ya coincide la
+#   version). Subtype 0x40 = particion de datos generica cruda (mismo
+#   convenio que usa el ejemplo oficial de Espressif para este caso).
+#
 # Name,     Type, SubType, Offset,    Size
 nvs,        data, nvs,     0x9000,    0x6000
 phy_init,   data, phy,     0xf000,    0x1000
 factory,    app,  factory, 0x10000,   0x600000
+slave_fw,   data, 0x40,    0x610000,  0x200000

@@ -192,3 +192,96 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=25
 # 16 KB es suficiente para app_main() con todas las llamadas de init.
 # -----------------------------------------------------------------------------
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# -----------------------------------------------------------------------------
+# WiFi via ESP32-C6 (esp_hosted) — link a la app Android compañera
+#
+# El ESP32-P4 no tiene radio propia. El WiFi corre sobre el co-procesador
+# ESP32-C6 a bordo, conectado por SDIO, vía espressif/esp_hosted. Una vez
+# configurado, la app usa esp_wifi.h estándar sin cambios (ver
+# components/wifi/wifi.c) — esp_hosted actúa como transporte transparente.
+#
+# Slot SDIO: la SD (storage) ya ocupa el slot 0 con pines IOMUX fijos
+# (CMD=44, CLK=43, D0-D3=39-42, ver board_config.h) — coincide exactamente
+# con lo que exige ese slot en el ESP32-P4, así que esp_hosted DEBE ir en
+# el slot 1 (default de la librería, no hace falta fijarlo a mano).
+#
+# CONFLICTO DE HARDWARE — CONFIRMADO EN HARDWARE REAL (2026-09-16):
+# el pin de reset del C6 que usa esp_hosted por default en ESP32-P4 es
+# GPIO54 — el MISMO pin que usa la cámara OV5647 para XCLK (ver
+# board_config.h). Se intentó primero deshabilitar el reset por GPIO
+# (-1, valor permitido por el rango del Kconfig), pero el driver real
+# (eh_host_bus_sdio.c:1982, ensure_slave_bus_ready) hace
+# `assert(reset_pin.pin != -1)` INCONDICIONAL — no hay forma de arrancar
+# sin un pin de reset real, sin importar la estrategia configurada.
+# Confirmado con el log de boot real: crash-reboot loop con
+# "assert failed: ensure_slave_bus_ready eh_host_bus_sdio.c:1982".
+#
+# Se usa GPIO54 (el pin físico real, según pines confirmados en hardware:
+# CLK=18 CMD=19 D0-D3=14-17, iguales a un BSP de terceros para esta misma
+# placa). Mitigación: `ensure_slave_bus_ready()` pulsa el reset UNA sola vez
+# durante `wifi_init()` (no lo mantiene ocupado después) — en
+# main/sentis.c, wifi_init() corre bien antes que vision_init(), así que la
+# cámara configura GPIO54 recién después de que el pulso de reset terminó.
+# PENDIENTE DE CONFIRMAR EN HARDWARE: que la cámara siga funcionando bien
+# tras este cambio de orden — si el frame de cámara sale corrupto o no
+# arranca, este es el primer sospechoso.
+# -----------------------------------------------------------------------------
+CONFIG_ESP_HOSTED=y
+CONFIG_ESP_HOSTED_HOST_TYPE_MCU=y
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
+
+CONFIG_ESP_HOSTED_HOST_TRANSPORT_BUS_SDIO=y
+CONFIG_ESP_HOSTED_HOST_RESET_GPIO=54
+
+# Confirmado en hardware (2026-09-18): el bring-up a veces no completa el
+# handshake SDIO con el C6, y cuando eso pasa el controlador SDMMC queda
+# ocupado/sin liberar, tumbando también el montaje de la SD (storage_init
+# falla con "no available sd host controller" en el mismo boot).
+#
+# Primer intento (insuficiente): subir CONFIG_ESP_HOSTED_HOST_CP_BRINGUP_TIMEOUT_MS
+# de 5000 a 15000ms + reintento automático — NO alcanzó, el fallo cambió de
+# forma (dejó de aparecer "bring-up timed out") pero se sigue colgando en el
+# handshake de mas arriba (eh_init_evt), ahora en ~5.6s.
+#
+# Causa real sospechada: reconectar idf.py monitor resetea el P4 (via RTS)
+# pero NO al C6 (tiene alimentación propia) — el P4 arranca de cero contra
+# un C6 que sigue corriendo con estado viejo de la sesión anterior. Con
+# estrategia "solo si es necesario" el chequeo inicial de bus pasa igual
+# (el C6 sigue respondiendo a nivel físico SDIO), así que nunca se llega a
+# pulsar el reset real, y se cuelga en el handshake de protocolo (que no
+# depende de BRINGUP_TIMEOUT_MS). Fix: resetear el C6 SIEMPRE al arrancar
+# el P4, no solo cuando falla — mantiene a ambos sincronizados en cada boot.
+# DIAGNOSTICO TEMPORAL (2026-09-18): volver a ONLY_IF_NECESSARY para probar
+# si el pulso de reset en si (no el estado del pin despues) es la causa de
+# que la camara deje de entregar frames con RESET_STRATEGY_ALWAYS. Si esto
+# arregla la camara, confirma la hipotesis pero reintroduce el WiFi flaky
+# entre boots via monitor (el C6 no se resetea solo al reconectar el
+# monitor — ver memoria del proyecto). Revertir a ALWAYS si no cambia nada.
+CONFIG_ESP_HOSTED_HOST_CP_RESET_STRATEGY_ONLY_IF_NECESSARY=y
+CONFIG_ESP_HOSTED_HOST_CP_BRINGUP_TIMEOUT_MS=15000
+CONFIG_ESP_HOSTED_HOST_CP_BRINGUP_ON_TIMEOUT_REATTEMPT=y
+
+# EXPERIMENTO CERRADO (2026-09-21): choice ESP_HOSTED_HOST_SDIO_RX_OPT
+# agotado por completo, las 3 opciones probadas/analizadas:
+#   - RX_STREAMING_MODE (default, esta linea comentada abajo): camara
+#     rota (frame timeout indefinido) pero WiFi/link estables.
+#   - RX_NONE: crash fatal en cada boot — "SDIO mode mismatch: slave is
+#     in streaming mode, but host is in packet mode. Aborting."
+#   - RX_MAX_SIZE: MISMO crash fatal, identico mensaje.
+# Cualquier opcion distinta de la default hace que el host se anuncie
+# como "packet" en la negociacion — y el C6 nunca puede aceptar eso
+# porque esta version vendorizada de esp_hosted (3.0.7) tiene el modo
+# PACKET del lado CP deshabilitado upstream (ver
+# coprocessor/sdkconfig.defaults, "#error Not the current run" en
+# coprocessor/eh_cp_transport/src/eh_cp_transport_sdio.c:378). Conclusion:
+# este Kconfig choice no es un camino viable para probar la hipotesis
+# SW_AGGR con este firmware del C6 — hace falta otro enfoque (ver memoria
+# project-wifi-companion-app). Se vuelve al default explicitamente para
+# dejar la placa en el estado estable conocido.
+CONFIG_ESP_HOSTED_HOST_SDIO_RX_STREAMING_MODE=y
+
+CONFIG_ESP_HOSTED_HOST_FEAT_RPC=y
+CONFIG_ESP_HOSTED_HOST_FEAT_RPC_EXT_V2=y
+CONFIG_ESP_HOSTED_HOST_FEAT_SYSTEM=y
+CONFIG_ESP_HOSTED_HOST_FEAT_WIFI=y
