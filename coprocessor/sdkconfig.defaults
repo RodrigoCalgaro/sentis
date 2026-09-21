@@ -64,3 +64,34 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # upstream en este release. Modo PACKET del lado CP descartado por
 # completo (no es viable, no un bug nuestro). Ver memoria
 # project-wifi-companion-app.
+
+# ── Fix confirmado: SW_AGGR era la causa de "camara rota con WiFi activo" ──
+# (Fase 1, plan de estabilidad, ver sentis-stability-integration-plan.md)
+#
+# El choice EH_TRANSPORT_CP_SDIO_MODE por default cae en SW_AGGR (ver
+# Kconfig.cp.sdio: "SW_AGGR is the rel-3 DEFAULT"). SW_AGGR y STREAM son
+# ORTOGONALES a la Kconfig de RX_OPT del lado host (ESP_HOSTED_HOST_SDIO_RX_*
+# en el proyecto raiz) — esa Kconfig solo controla el flag de 2 estados
+# streaming/packet (EH_PRIV_TRANS_SDIO_MODE), que STREAM y SW_AGGR reportan
+# IGUAL (streaming=1, ver eh_cp_master_config.h linea ~481: "Stream-class
+# modes (STREAM now; SW_AGGR later) set the legacy flag=1"). El modo real de
+# agregacion (SW_AGGR vs STREAM) se negocia por una TLV SEPARADA
+# (EH_PRIV_SDIO_BUF_CONFIG) que el CP decide unilateralmente segun ESTE
+# Kconfig — el host solo la lee y la acepta, no hay Kconfig del lado host que
+# la controle. Los experimentos RX_OPT de la sesion 2026-09-21 probaron el
+# knob equivocado para esta hipotesis (nunca podian haber cambiado SW_AGGR).
+#
+# CONFIRMADO EN HARDWARE (2026-09-21, dos arranques limpios + observacion
+# extendida, ~337s continuos sin resetear): con STREAM en vez de SW_AGGR y
+# el host SIN TOCAR (RX_STREAMING_MODE default), la camara entrego frames
+# sostenidos a 20-21 fps con el SoftAP del C6 arriba todo el tiempo — cero
+# "ISP: fifo overflow", cero "ISP: data type error", cero "vision: frame
+# timeout". Antes, con SW_AGGR, la camara se rompia de forma determinista en
+# cada boot. STREAM SI compila (a diferencia de PACKET, ver arriba).
+#
+# Pendiente (no bloqueante): validar tambien con trafico real de
+# components/link circulando (hoy solo se probo con el SoftAP idle) cuando
+# se retome el wiring de la Fase 2 — el trafico ya se habia descartado como
+# causa bajo SW_AGGR en la sesion 2026-09-18, pero no esta de mas confirmar
+# bajo STREAM tambien.
+CONFIG_EH_TRANSPORT_CP_SDIO_MODE_STREAM=y
