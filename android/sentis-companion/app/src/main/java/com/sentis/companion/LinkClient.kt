@@ -108,24 +108,36 @@ class LinkClient(
         }
     }
 
+    // Los callers (botones de MainActivity) llaman a esto directo desde el
+    // hilo de UI (onClickListener) — despachamos la escritura bloqueante a
+    // un hilo aparte aca adentro, en vez de exigirle a cada caller que lo
+    // haga, porque Android prohibe I/O de red en el hilo principal
+    // (NetworkOnMainThreadException, que ademas no trae mensaje de texto:
+    // "Error mandando (tipo=N): null" en el log es justamente esa excepcion,
+    // no un problema del firmware ni de la conexion — confirmado en hardware
+    // real 2026-09-21, la recepcion de audio funcionaba perfecto porque
+    // readLoop() ya corria en background, pero start/stop reading y
+    // responder OCR fallaban siempre por esto).
     private fun sendFramed(type: Int, payload: ByteArray) {
-        synchronized(writeLock) {
-            val o = out
-            if (o == null) {
-                onLog("No conectado, no se puede mandar (tipo=$type)")
-                return
-            }
-            val header = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN)
-            header.putInt(MAGIC)
-            header.put(type.toByte())
-            header.put(byteArrayOf(0, 0, 0))
-            header.putInt(payload.size)
-            try {
-                o.write(header.array())
-                o.write(payload)
-                o.flush()
-            } catch (e: Exception) {
-                onLog("Error mandando (tipo=$type): ${e.message}")
+        thread(name = "link-send") {
+            synchronized(writeLock) {
+                val o = out
+                if (o == null) {
+                    onLog("No conectado, no se puede mandar (tipo=$type)")
+                    return@thread
+                }
+                val header = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN)
+                header.putInt(MAGIC)
+                header.put(type.toByte())
+                header.put(byteArrayOf(0, 0, 0))
+                header.putInt(payload.size)
+                try {
+                    o.write(header.array())
+                    o.write(payload)
+                    o.flush()
+                } catch (e: Exception) {
+                    onLog("Error mandando (tipo=$type): ${e.message}")
+                }
             }
         }
     }
