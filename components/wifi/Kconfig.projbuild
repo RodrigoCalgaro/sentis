@@ -1,0 +1,30 @@
+menu "SENTIS WiFi (link a app companion)"
+
+    config WIFI_SSID
+        string "SoftAP SSID"
+        default "SENTIS"
+        help
+            Nombre de la red WiFi que crea el ESP32-P4 (via el co-procesador
+            ESP32-C6 + esp_hosted) para que la app Android companera se
+            conecte. El ESP32 es el punto de acceso; el celular se conecta
+            como cliente.
+
+    config WIFI_PASSWORD
+        string "SoftAP password"
+        default "sentisglasses"
+        help
+            Minimo 8 caracteres (requerido por WPA2). Dejar vacio para red
+            abierta (no recomendado, incluido solo para debug rapido).
+
+    config WIFI_CHANNEL
+        int "SoftAP WiFi channel"
+        default 6
+        range 1 13
+
+    config WIFI_MAX_STA_CONN
+        int "Maxima cantidad de clientes simultaneos"
+        default 1
+        help
+            Solo se espera un celular conectado a la vez.
+
+endmenu
