@@ -26,6 +26,12 @@ extern "C" {
 //   LINK_MSG_COMMAND     comando de voz reconocido (Vosk, en la app)
 //   LINK_MSG_OCR_RESULT  texto reconocido (ML Kit, en la app) para el ultimo
 //                        LINK_MSG_OCR_REQUEST pendiente
+//   LINK_MSG_TTS_AUDIO   PCM mono 16kHz 16-bit sintetizado por el TTS nativo
+//                        de Android (mejor cadencia que eSpeak-NG) — se
+//                        reproduce por el parlante del propio ESP32, no el
+//                        del telefono (decision del usuario 2026-09-21).
+//                        Chunks de hasta LINK_TTS_AUDIO_MAX_SAMPLES, uno o
+//                        mas por locucion.
 //
 // link_init() no es fatal para el resto del sistema si falla (mismo criterio
 // que storage_init()/tts_init()/ocr_init()/wifi_init()).
@@ -35,6 +41,12 @@ extern "C" {
 // components/ocr/ocr.cpp llama link_request_ocr_text() en vez de correr
 // inferencia on-device. La tarea de autotest temporal (audio/JPEG
 // sinteticos, validada contra tools/link_test_client.py) ya se sacó.
+//
+// Fase 3.1: el texto de OCR ya no se locuta con tts_speak() en el ESP32
+// (ver components/ocr/ocr.cpp) — la app sintetiza con el TTS de Android y
+// manda el PCM resultante de vuelta por LINK_MSG_TTS_AUDIO, para que salga
+// por el parlante de SENTIS. El componente tts del ESP32 (eSpeak-NG) sigue
+// activo para mensajes que no dependen del celular (ej. "Sentis Encendido").
 // =============================================================================
 
 #define LINK_TCP_PORT          3333

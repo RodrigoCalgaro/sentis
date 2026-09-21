@@ -8,8 +8,9 @@ extern "C" {
 #endif
 
 // =============================================================================
-// ocr — lectura de texto vía la app Android companion (ML Kit del lado del
-// celular), con salida por voz en el propio ESP32.
+// ocr — lectura de texto vía la app Android companion: ML Kit reconoce el
+// texto del lado del celular, y el celular también lo locuta con el TTS
+// nativo de Android (Fase 3) — este componente no reproduce audio.
 //
 // Fase 2 (ver sentis-stability-integration-plan.md): este componente ya NO
 // corre inferencia on-device — la inferencia real (antes esp-dl/pp_ocr_v6,
@@ -22,15 +23,14 @@ extern "C" {
 //                           en boot) y crea la tarea de lectura, inicialmente
 //                           inactiva. Ya no depende de la SD.
 //   ocr_reading_start()   → señal no bloqueante: despierta la tarea y arranca
-//                           el loop captura→JPEG→link_request_ocr_text()→tts_speak().
+//                           el loop captura→JPEG→link_request_ocr_text() (la
+//                           app locuta el resultado del lado del celular).
 //   ocr_reading_stop()    → señal no bloqueante: pide detener el loop en el
-//                           próximo punto de interrupción seguro. La locución
-//                           en curso (tts_speak) termina normalmente — no se
-//                           cancela a mitad de frase.
+//                           próximo punto de interrupción seguro.
 //
-// Requiere vision_init() (captura de frames), tts_init() (locución) y
-// link_init() (transporte hacia la app) completados antes de llamar
-// ocr_init() — o al menos antes del primer "start reading" real.
+// Requiere vision_init() (captura de frames) y link_init() (transporte hacia
+// la app) completados antes de llamar ocr_init() — o al menos antes del
+// primer "start reading" real.
 //
 // Todas las funciones son seguras de llamar aunque ocr_init() no haya
 // corrido o haya fallado (no-op).
@@ -46,8 +46,8 @@ esp_err_t ocr_init(void);
 void ocr_reading_start(void);
 
 // Pide detener el loop de lectura. Idempotente: no-op si ya está detenido.
-// No bloqueante. El efecto puede demorar hasta una locución + una pasada de
-// inferencia (ver nota en ocr.c).
+// No bloqueante. El efecto puede demorar hasta un link_request_ocr_text() en
+// curso (ver OCR_REQUEST_TIMEOUT_MS en ocr.cpp).
 void ocr_reading_stop(void);
 
 // true si el loop de lectura está activo en este momento.

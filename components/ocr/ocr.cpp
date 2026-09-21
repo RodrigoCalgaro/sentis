@@ -1,6 +1,5 @@
 #include "ocr.h"
 #include "vision.h"
-#include "tts.h"
 #include "link.h"
 #include "driver/jpeg_encode.h"
 #include "esp_log.h"
@@ -19,8 +18,14 @@ static const char *TAG = "ocr";
 // crashes y baja precisión — ver project_ocr_pp_ocr_v6.md). Ahora es
 // exclusivamente captura + codificación JPEG por hardware + pedido/respuesta
 // por components/link hacia la app Android (ML Kit hace el OCR real del lado
-// del teléfono). tts_speak() sigue corriendo en el ESP32 — el celular solo
-// hace vision + reconocimiento, nunca reproduce audio.
+// del teléfono).
+//
+// Fase 3 (decisión del usuario 2026-09-21): el texto reconocido ya NO se
+// locuta acá — la app companion lo habla con el TTS nativo de Android
+// (mejor cadencia que eSpeak-NG para lectura en vivo, ver
+// VoiceCommandRecognizer/OcrTextRecognizer del lado Android). El componente
+// tts del ESP32 sigue activo para todo lo demás (ej. "Sentis Encendido" al
+// arrancar, en main/sentis.c) — funciona standalone sin celular conectado.
 // -----------------------------------------------------------------------------
 
 // Buffer de salida JPEG — dimensionado con margen sobre lo medido en
@@ -71,10 +76,10 @@ static void mirror_rgb565_inplace(uint8_t *buf, int w, int h)
 // bloqueada en s_start_sem hasta que ocr_reading_start() la despierta; al
 // terminar un ciclo de lectura vuelve a esperar, nunca se destruye.
 //
-// "stop reading" (s_stop_req) se revisa entre cada etapa del pipeline. La
-// única etapa que NO se interrumpe es una locución de tts_speak() ya en
-// curso — no existe cancelación en el componente tts, así que el peor caso
-// es terminar la frase actual antes de detenerse.
+// "stop reading" (s_stop_req) se revisa entre cada etapa del pipeline —
+// desde que la locución se mudó al celular (Fase 3), no queda ninguna etapa
+// bloqueante larga de este lado; el peor caso es esperar un
+// link_request_ocr_text() en curso (hasta OCR_REQUEST_TIMEOUT_MS).
 // -----------------------------------------------------------------------------
 static void ocr_task(void *arg)
 {
@@ -127,10 +132,9 @@ static void ocr_task(void *arg)
             esp_err_t ret = link_request_ocr_text(s_jpeg_out, jpeg_size, text, sizeof(text),
                                                    pdMS_TO_TICKS(OCR_REQUEST_TIMEOUT_MS));
             if (ret == ESP_OK) {
+                // La app ya lo locutó con el TTS de Android (Fase 3) — acá
+                // solo se loguea para diagnóstico (idf.py monitor).
                 ESP_LOGI(TAG, "app respondio: \"%s\"", text);
-                if (text[0] != '\0') {
-                    tts_speak(text);
-                }
             } else if (ret == ESP_ERR_NOT_FOUND) {
                 ESP_LOGW(TAG, "sin celular conectado — pausando capturas");
                 vTaskDelay(pdMS_TO_TICKS(2000));

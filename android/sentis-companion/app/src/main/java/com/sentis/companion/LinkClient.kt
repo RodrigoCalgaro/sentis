@@ -27,18 +27,28 @@ const val MSG_AUDIO = 1
 const val MSG_OCR_REQUEST = 2
 const val MSG_OCR_RESULT = 3
 const val MSG_COMMAND = 4
+const val MSG_TTS_AUDIO = 5
 
 class LinkClient(
     private val onLog: (String) -> Unit,
     private val onStatus: (String) -> Unit,
-    private val onAudioChunk: (Int) -> Unit,
+    private val onAudioChunk: (ByteArray) -> Unit,
     private val onOcrRequest: (ByteArray) -> Unit,
 ) {
     @Volatile private var socket: Socket? = null
     @Volatile private var out: DataOutputStream? = null
     private val writeLock = Object()
 
+    // Guarda contra doble tap en "Conectar" — sin esto, un segundo click
+    // mientras la primera conexion sigue viva abre un segundo socket, el
+    // ESP32 (single-client) aborta el primero ("Software caused connection
+    // abort") y el resultado es una reconexion espuria en vez de un no-op.
+    // Confirmado en hardware real 2026-09-21.
     fun connect(host: String, port: Int) {
+        if (socket != null) {
+            onLog("Ya conectado, ignoro nuevo intento de conexion.")
+            return
+        }
         thread(name = "link-client") {
             try {
                 onStatus("Conectando a $host:$port...")
@@ -101,7 +111,7 @@ class LinkClient(
             }
 
             when (type) {
-                MSG_AUDIO -> onAudioChunk(payload.size)
+                MSG_AUDIO -> onAudioChunk(payload)
                 MSG_OCR_REQUEST -> onOcrRequest(payload)
                 else -> onLog("Tipo de mensaje inesperado del ESP32: $type (${payload.size} bytes)")
             }
@@ -119,25 +129,33 @@ class LinkClient(
     // readLoop() ya corria en background, pero start/stop reading y
     // responder OCR fallaban siempre por esto).
     private fun sendFramed(type: Int, payload: ByteArray) {
-        thread(name = "link-send") {
-            synchronized(writeLock) {
-                val o = out
-                if (o == null) {
-                    onLog("No conectado, no se puede mandar (tipo=$type)")
-                    return@thread
-                }
-                val header = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN)
-                header.putInt(MAGIC)
-                header.put(type.toByte())
-                header.put(byteArrayOf(0, 0, 0))
-                header.putInt(payload.size)
-                try {
-                    o.write(header.array())
-                    o.write(payload)
-                    o.flush()
-                } catch (e: Exception) {
-                    onLog("Error mandando (tipo=$type): ${e.message}")
-                }
+        thread(name = "link-send") { writeFramed(type, payload) }
+    }
+
+    // Escritura directa (sin spawnear hilo) — para callers que ya corren en
+    // un hilo de background propio y necesitan que varios mensajes salgan
+    // EN ORDEN (ver sendTtsAudioChunk: sendFramed() spawnea un hilo nuevo
+    // por llamada, y el orden de adquisición de writeLock entre hilos no
+    // está garantizado — bien para comandos/resultados sueltos, pero
+    // mandaría los chunks de una locución fuera de orden).
+    private fun writeFramed(type: Int, payload: ByteArray) {
+        synchronized(writeLock) {
+            val o = out
+            if (o == null) {
+                onLog("No conectado, no se puede mandar (tipo=$type)")
+                return
+            }
+            val header = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN)
+            header.putInt(MAGIC)
+            header.put(type.toByte())
+            header.put(byteArrayOf(0, 0, 0))
+            header.putInt(payload.size)
+            try {
+                o.write(header.array())
+                o.write(payload)
+                o.flush()
+            } catch (e: Exception) {
+                onLog("Error mandando (tipo=$type): ${e.message}")
             }
         }
     }
@@ -157,6 +175,23 @@ class LinkClient(
     // en tools/link_test_client.py).
     fun sendOcrResult(text: String) {
         sendFramed(MSG_OCR_RESULT, text.toByteArray(Charsets.UTF_8))
-        onLog("-> OCR_RESULT texto=\"$text\"")
+        // Sin texto reconocido no hay nada que loguear — durante una lectura
+        // la mayoria de los frames no tienen texto en cuadro, y logear cada
+        // uno igual ensucia el log sin aportar nada (pedido 2026-09-21).
+        if (text.isNotBlank()) {
+            onLog("-> OCR_RESULT texto=\"$text\"")
+        }
+    }
+
+    // Un chunk de PCM mono 16-bit del TTS de Android (ver TtsSpeaker), para
+    // que el ESP32 lo reproduzca por su parlante (LINK_MSG_TTS_AUDIO en
+    // components/link/link.c). Llamado desde el hilo propio de TtsSpeaker en
+    // un loop apretado — sin log por chunk (una locución típica manda
+    // decenas) y con escritura directa vía writeFramed() para no perder el
+    // orden entre chunks de la misma locución (ver ahí el porqué).
+    fun sendTtsAudioChunk(samples: ShortArray) {
+        val buf = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (s in samples) buf.putShort(s)
+        writeFramed(MSG_TTS_AUDIO, buf.array())
     }
 }
