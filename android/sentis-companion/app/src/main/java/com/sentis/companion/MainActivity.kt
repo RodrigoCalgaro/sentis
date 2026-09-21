@@ -1,11 +1,18 @@
 package com.sentis.companion
 
 import android.app.Activity
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
+
+// SoftAP fijo de components/wifi (ver sdkconfig: CONFIG_WIFI_SSID/PASSWORD).
+// Hardcodeado igual que el host/puerto ya precargados en activity_main.xml —
+// esta es la app de prueba, no un cliente genérico.
+private const val SENTIS_SSID = "SENTIS"
+private const val SENTIS_PASSWORD = "sentisglasses"
 
 // =============================================================================
 // MainActivity — app companion de components/link (firmware SENTIS).
@@ -17,7 +24,10 @@ import android.widget.TextView
 // para que suene por el parlante de SENTIS, no el del teléfono. El ESP32 ya
 // no habla el resultado del OCR con su propio TTS (components/ocr/ocr.cpp),
 // solo lo sigue usando para mensajes que no dependen del celular (ej.
-// "Sentis Encendido" al arrancar).
+// "Sentis Encendido" al arrancar). En Android 10+, "Conectar" reserva la red
+// SENTIS por SSID (SentisNetworkManager) y ata el socket a ella, para no
+// perder la conectividad normal del resto del teléfono mientras se usa la
+// app — decisión del usuario 2026-09-21.
 //
 // Los botones de start/stop reading y el campo de texto de OCR quedan como
 // vía manual de prueba (Fase 3) — Vosk/ML Kit son la vía automática, ambas
@@ -40,6 +50,7 @@ class MainActivity : Activity() {
     private var voiceRecognizer: VoiceCommandRecognizer? = null
     private var ocrRecognizer: OcrTextRecognizer? = null
     private var ttsSpeaker: TtsSpeaker? = null
+    private var sentisNetworkManager: SentisNetworkManager? = null
 
     // Último texto de OCR efectivamente hablado. ocr_task manda un pedido por
     // frame mientras dura la lectura — con la página quieta, frames
@@ -71,6 +82,10 @@ class MainActivity : Activity() {
             context = this,
             onLog = { msg -> runOnUiThread { appendLog(msg) } },
             sendAudioChunk = { samples -> client?.sendTtsAudioChunk(samples) },
+        )
+        sentisNetworkManager = SentisNetworkManager(
+            context = this,
+            onLog = { msg -> runOnUiThread { appendLog(msg) } },
         )
 
         client = LinkClient(
@@ -123,7 +138,23 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.connectButton).setOnClickListener {
             val host = hostInput.text.toString().trim()
             val port = portInput.text.toString().toIntOrNull() ?: 3333
-            client?.connect(host, port)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appendLog("Reservando la red SENTIS (sin tocar la conectividad del resto del teléfono)...")
+                sentisNetworkManager?.requestSentisNetwork(SENTIS_SSID, SENTIS_PASSWORD) { network ->
+                    runOnUiThread {
+                        if (network != null) {
+                            client?.connect(host, port, network)
+                        } else {
+                            appendLog("Sigo con la red WiFi actual del teléfono.")
+                            client?.connect(host, port)
+                        }
+                    }
+                }
+            } else {
+                // Sin WifiNetworkSpecifier (API < 29): depende de que el
+                // usuario ya haya conectado el WiFi a mano, como siempre.
+                client?.connect(host, port)
+            }
         }
 
         findViewById<Button>(R.id.startReadingButton).setOnClickListener {
@@ -160,6 +191,7 @@ class MainActivity : Activity() {
         client?.disconnect()
         voiceRecognizer?.close()
         ttsSpeaker?.close()
+        sentisNetworkManager?.release()
         super.onDestroy()
     }
 }

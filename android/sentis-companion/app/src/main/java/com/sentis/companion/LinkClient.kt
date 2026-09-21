@@ -1,7 +1,9 @@
 package com.sentis.companion
 
+import android.net.Network
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -44,7 +46,14 @@ class LinkClient(
     // ESP32 (single-client) aborta el primero ("Software caused connection
     // abort") y el resultado es una reconexion espuria en vez de un no-op.
     // Confirmado en hardware real 2026-09-21.
-    fun connect(host: String, port: Int) {
+    //
+    // network: si viene de SentisNetworkManager (Android 10+), el socket se
+    // ata a esa red especifica ANTES de conectar, para que este trafico vaya
+    // por el SoftAP de SENTIS sin importar cual sea la red "default" del
+    // telefono — asi el resto del telefono no pierde internet. Null en
+    // versiones viejas o si no se pudo reservar esa red: se conecta con la
+    // red que el sistema use por default (comportamiento previo).
+    fun connect(host: String, port: Int, network: Network? = null) {
         if (socket != null) {
             onLog("Ya conectado, ignoro nuevo intento de conexion.")
             return
@@ -52,7 +61,9 @@ class LinkClient(
         thread(name = "link-client") {
             try {
                 onStatus("Conectando a $host:$port...")
-                val s = Socket(host, port)
+                val s = Socket()
+                network?.bindSocket(s)
+                s.connect(InetSocketAddress(host, port), 5000)
                 socket = s
                 out = DataOutputStream(s.getOutputStream())
                 onStatus("Conectado a $host:$port")
