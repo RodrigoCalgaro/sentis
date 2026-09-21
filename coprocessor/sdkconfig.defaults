@@ -1,0 +1,66 @@
+# =============================================================================
+# sdkconfig.defaults — firmware del co-procesador ESP32-C6 (SENTIS)
+#
+# Este es un proyecto ESP-IDF SEPARADO (target esp32c6) del proyecto
+# principal (target esp32p4, carpeta raiz del repo). Ver README.md en esta
+# carpeta.
+#
+# Motivo: el C6 vino de fabrica con un firmware generico (se reporta como
+# "coprocessor=0.0.0" al P4, "major version mismatch" en el log de boot) —
+# no es un release real de esp_hosted. Este proyecto compila el firmware
+# correcto para subirlo via OTA-sobre-SDIO desde el propio P4 (ver
+# components/ota (P4) — pendiente, ver README.md).
+#
+# Basado en examples/ota/coprocessor_ota/cp/sdkconfig.defaults +
+# sdkconfig.defaults.esp32c6 de espressif/esp-hosted-mcu, fusionados en un
+# solo archivo porque este proyecto SIEMPRE apunta a esp32c6 (no hace falta
+# el mecanismo de sdkconfig.defaults.<target> para soportar varios chips).
+# =============================================================================
+
+# ── Role: COPROCESSOR ────────────────────────────────────────────────
+CONFIG_ESP_HOSTED=y
+CONFIG_ESP_HOSTED_CP=y
+CONFIG_ESP_HOSTED_CP_FOR_MCU=y
+CONFIG_ESP_HOSTED_CP_RPC_V2=y
+CONFIG_ESP_HOSTED_CP_FEAT_WIFI=y
+
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+
+# Bluetooth deshabilitado — SENTIS no lo usa (ver decision de diseño: BLE
+# sobre esta combinacion P4+C6 tiene un bug abierto sin resolver upstream).
+CONFIG_BT_ENABLED=n
+
+# ── Particiones — dual OTA, 4MB flash (tamaño tipico ESP32-C6-MINI-1) ──
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_eh_cp_ota_4m.csv"
+
+# ── OS / WiFi ────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_WIFI_NVS_ENABLED=y
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_ESP_CACHE_MALLOC=y
+
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=20
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_TX_BA_WIN=32
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+CONFIG_ESP_WIFI_RX_BA_WIN=32
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+CONFIG_ESP_WIFI_IRAM_OPT=y
+
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# NO USAR CONFIG_EH_TRANSPORT_CP_SDIO_MODE_PACKET=y (2026-09-21): se probo
+# como contraparte de CONFIG_ESP_HOSTED_HOST_SDIO_RX_NONE del lado P4 (ver
+# sdkconfig.defaults del proyecto raiz) para intentar deshabilitar
+# SW_AGGR/streaming en ambos lados del link. NO COMPILA en esta version
+# vendorizada de esp_hosted (3.0.7): coprocessor/eh_cp_transport/src/
+# eh_cp_transport_sdio.c:378 tiene un "#error Not the current run" literal
+# dentro de la rama TX_MODE_PACKET del CP — deliberadamente deshabilitado
+# upstream en este release. Modo PACKET del lado CP descartado por
+# completo (no es viable, no un bug nuestro). Ver memoria
+# project-wifi-companion-app.

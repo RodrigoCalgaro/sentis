@@ -3,3 +3,11 @@ SENTIS.docx
 sdkconfig
 sdkconfig.old
 .claude
+
+# Vendored examples/tests inside the coprocessor's copy of espressif__esp_hosted:
+# not referenced by coprocessor/main (only depends on the top-level esp_hosted
+# component itself), and the extra "coprocessor/" path prefix pushes several of
+# their deeply-nested files past Windows' 260-char MAX_PATH, which makes `git
+# add coprocessor/` fail silently for the whole tree. Safe to exclude.
+coprocessor/managed_components/espressif__esp_hosted/examples/
+coprocessor/managed_components/espressif__esp_hosted/port/idf_components/esp_wifi_remote/esp_wifi_remote/components/esp_wifi_remote/test/

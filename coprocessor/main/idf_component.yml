@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File — firmware del co-procesador (C6)
+dependencies:
+  espressif/esp_hosted:
+    version: ">=2.12.12"
+  idf:
+    version: ">=5.5"
