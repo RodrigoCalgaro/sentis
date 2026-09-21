@@ -28,14 +28,13 @@ extern "C" {
 //                        LINK_MSG_OCR_REQUEST pendiente
 //
 // link_init() no es fatal para el resto del sistema si falla (mismo criterio
-// que storage_init()/tts_init()/stt_init()/ocr_init()/wifi_init()).
+// que storage_init()/tts_init()/ocr_init()/wifi_init()).
 //
-// MILESTONE 2 (en validacion, ver plan de migracion OCR+STT a app
-// companion): este componente todavia NO esta conectado a mic/ocr reales
-// (eso es el paso siguiente). link.c corre una tarea de autotest temporal
-// que manda audio e imagenes sinteticas para validar el protocolo con
-// tools/link_test_client.py antes de tocar sensores reales — buscar
-// "AUTOTEST TEMPORAL" en link.c para sacarla cuando se haga el wiring real.
+// Fase 2 (ver sentis-stability-integration-plan.md): conectado a mic/ocr
+// reales — main/sentis.c llama mic_init(link_send_audio) directo, y
+// components/ocr/ocr.cpp llama link_request_ocr_text() en vez de correr
+// inferencia on-device. La tarea de autotest temporal (audio/JPEG
+// sinteticos, validada contra tools/link_test_client.py) ya se sacó.
 // =============================================================================
 
 #define LINK_TCP_PORT          3333

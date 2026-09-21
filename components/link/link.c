@@ -262,49 +262,6 @@ static void link_audio_sender_task(void *arg)
     }
 }
 
-// =============================================================================
-// AUTOTEST TEMPORAL (Milestone 2 — validar el protocolo antes de conectar
-// mic/ocr reales). Manda audio sintetico cada segundo y un pedido de OCR
-// sintetico cada 10s mientras haya un celular conectado. Pensado para
-// probarse contra tools/link_test_client.py. Sacar esta tarea (y su
-// xTaskCreate en link_init) cuando se conecte mic_init(link_send_audio) y
-// ocr.cpp llame a link_request_ocr_text() de verdad.
-// =============================================================================
-static void link_autotest_task(void *arg)
-{
-    static const uint8_t fake_jpeg[] = {
-        0xFF, 0xD8, 'S', 'E', 'N', 'T', 'I', 'S', '-', 'T', 'E', 'S', 'T', 0xFF, 0xD9,
-    };
-    int16_t test_audio[LINK_AUDIO_CHUNK_SAMPLES];
-    uint32_t counter = 0;
-    TickType_t last_ocr_test = xTaskGetTickCount();
-
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        if (!link_is_client_connected()) {
-            continue;
-        }
-
-        for (size_t i = 0; i < LINK_AUDIO_CHUNK_SAMPLES; i++) {
-            test_audio[i] = (int16_t)((counter + i) & 0x7FFF);
-        }
-        counter++;
-        link_send_audio(test_audio, LINK_AUDIO_CHUNK_SAMPLES);
-
-        if ((xTaskGetTickCount() - last_ocr_test) >= pdMS_TO_TICKS(10000)) {
-            last_ocr_test = xTaskGetTickCount();
-            char text[LINK_OCR_TEXT_MAX];
-            esp_err_t ret = link_request_ocr_text(fake_jpeg, sizeof(fake_jpeg), text, sizeof(text),
-                                                   pdMS_TO_TICKS(5000));
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "AUTOTEST: OCR respondio \"%s\"", text);
-            } else {
-                ESP_LOGW(TAG, "AUTOTEST: OCR sin respuesta (%s)", esp_err_to_name(ret));
-            }
-        }
-    }
-}
-
 esp_err_t link_init(link_command_cb_t cb)
 {
     s_command_cb = cb;
@@ -322,7 +279,6 @@ esp_err_t link_init(link_command_cb_t cb)
         return ESP_FAIL;
     }
     xTaskCreate(link_audio_sender_task, "link_audio_tx", 3072, NULL, 3, NULL);
-    xTaskCreate(link_autotest_task, "link_autotest", 3072, NULL, 2, NULL);  // AUTOTEST TEMPORAL
 
     ESP_LOGI(TAG, "link_init OK");
     return ESP_OK;

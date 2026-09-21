@@ -151,8 +151,12 @@ esp_err_t tts_speak(const char *text)
     synth_args_t args = { .text = text, .done = done, .result = ESP_FAIL };
 
     // 64 KB de stack para el motor de síntesis (TranslateClause + MakePhonemeList
-    // consumen ~39 KB en la cadena de llamadas más profunda)
-    BaseType_t ok = xTaskCreate(synth_task, "tts_synth", 65536, &args, 5, NULL);
+    // consumen ~39 KB en la cadena de llamadas más profunda).
+    // Pineada a core 1 (junto con vision_task/ocr_task) — sin esto el
+    // scheduler puede colocarla en core 0, donde compite con mic_task/
+    // lidar_task (prioridad 6, tiempo real) por CPU. Mismo criterio de
+    // pinning que components/mic/mic.c y components/ocr/ocr.cpp.
+    BaseType_t ok = xTaskCreatePinnedToCore(synth_task, "tts_synth", 65536, &args, 5, NULL, 1);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "no hay memoria para tarea de síntesis");
         vSemaphoreDelete(done);

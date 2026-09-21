@@ -20,7 +20,7 @@ extern "C" {
 // Kconfig.projbuild) para que la app Android se conecte como cliente fijo
 // en 192.168.4.1. No fatal para el resto del sistema si falla: logea el
 // error y retorna (mismo criterio que storage_init()/tts_init()/
-// stt_init()/ocr_init() en main/sentis.c).
+// ocr_init() en main/sentis.c).
 //
 // Dueno de nvs_flash_init()/esp_netif_init()/esp_event_loop_create_default():
 // nada mas en este proyecto los llama todavia — wifi_init() los inicializa

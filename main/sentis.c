@@ -12,7 +12,6 @@
 #include "storage.h"
 #include "audio.h"
 #include "mic.h"
-#include "stt.h"
 #include "tts.h"
 #include "ocr.h"
 
@@ -44,31 +43,26 @@
 #define PROXIMITY_POLL_MS   50
 
 // -----------------------------------------------------------------------------
-// on_stt_result — callback invocada por el componente stt cuando se reconoce
-// un comando de voz.
+// on_link_command — callback invocada por el componente link cuando llega un
+// comando de voz reconocido desde la app Android companion (Vosk, del lado
+// del celular — el ESP32 nunca escucha por su propio micrófono para esto,
+// ver ocr_reading_start/stop más abajo y components/link/link.h).
 //
-// Responsabilidades:
-//   1. Log en consola (siempre visible en idf.py monitor).
-//   2. Publicar en el monitor viewer para overlay visual (si está habilitado).
+// Reemplaza al viejo on_stt_result (ESP-SR/MultiNet on-device, retirado en
+// la Fase 2 — ver sentis-stability-integration-plan.md). Misma tabla de IDs
+// de comando que usaba stt.c, para no romper la app Android de prueba
+// (android/sentis-companion/LinkClient.kt ya manda 6/7).
 //
-// Nota: esta función se llama desde mic_task (prioridad 6), directamente
-// dentro del loop de alimentación de ESP-SR — no bloquear aquí.
+// Se llama desde la tarea de recepción de link — no bloquear aquí.
 // -----------------------------------------------------------------------------
-static void on_stt_result(const stt_result_t *result)
+static void on_link_command(const link_command_t *cmd)
 {
-    // El log aparece en el monitor serie aunque el viewer gráfico esté apagado.
-    // Formato consistente con el resto de los logs del proyecto.
-    // Nivel INFO para que sea visible en builds de producción.
-    ESP_LOGI("stt", "COMANDO: [%d] \"%s\"", result->command_id, result->text);
+    ESP_LOGI("link", "COMANDO (app): [%d] \"%s\"", cmd->command_id, cmd->text);
 
     // Publicar al viewer gráfico (no-op si CONFIG_MONITOR_ENABLED=n).
-    monitor_set_stt_text(result->text);
+    monitor_set_stt_text(cmd->text);
 
-    // Despacho de comandos que requieren acción — solo señalizar tareas,
-    // NUNCA bloquear aquí (esta función corre inline dentro de mic_task,
-    // prioridad 6). ocr_reading_start/stop son no bloqueantes y seguras de
-    // llamar aunque ocr_init() no haya corrido todavía.
-    switch (result->command_id) {
+    switch (cmd->command_id) {
         case 6:  // "start reading"
             ocr_reading_start();
             break;
@@ -78,22 +72,6 @@ static void on_stt_result(const stt_result_t *result)
         default:
             break;
     }
-}
-
-// -----------------------------------------------------------------------------
-// on_link_command — callback invocada por el componente link cuando llega un
-// comando de voz reconocido desde la app Android companion (Vosk, del lado
-// del celular).
-//
-// MILESTONE 2 (en validación, ver plan de migración OCR+STT a app
-// companion): solo logea por ahora — el despacho real (reemplazar
-// on_stt_result / stt_init+mic_init por esto) es un paso siguiente
-// separado, todavía no hecho. Se llama desde la tarea de recepción de
-// link — no bloquear aquí (mismo criterio que on_stt_result).
-// -----------------------------------------------------------------------------
-static void on_link_command(const link_command_t *cmd)
-{
-    ESP_LOGI("link", "COMANDO (app): [%d] \"%s\"", cmd->command_id, cmd->text);
 }
 
 // -----------------------------------------------------------------------------
@@ -192,22 +170,26 @@ static void proximity_task(void *arg)
 // app_main — punto de entrada del firmware SENTIS.
 //
 // Orden de inicialización:
-//   1. haptic_init   — LEDC PWM, sin dependencias externas
-//   2. lidar_init    — UART1, sin dependencias externas
-//   3. storage_init  — SDMMC 4-bit → FAT VFS en /sdcard (Fase 2)
-//   4. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
-//                      Abre TX (playback) y RX (micrófono) en el mismo I2S0.
-//   5. tts_init      — carga voz eSpeak-NG desde SD (Fase 6A)
-//                      Reproduce "Sentis Encendido" como confirmación de arranque.
-//   6. stt_init      — carga modelos ESP-SR desde SD (Fase 4)
-//   7. mic_init      — tarea de captura: ES8311 ADC → chunks mono → stt_feed()
-//   8. vision_init   — I2C + MIPI CSI-2 (Fase 5)
-//   9. monitor_init  — transmisión de frames para desarrollo (Fase 5)
-//  10. proximity_task — fusiona LiDAR + visión + háptica
+//    1. haptic_init   — LEDC PWM, sin dependencias externas
+//    2. lidar_init    — UART1, sin dependencias externas
+//    3. wifi_init     — C6 (esp_hosted/SDIO) + SoftAP para la app companion
+//    4. cp_ota_check_and_update — actualiza el firmware del C6 si hace falta
+//    5. link_init     — servidor TCP hacia la app companion (Fase 2)
+//    6. storage_init  — SDMMC 4-bit → FAT VFS en /sdcard (Fase 2)
+//    7. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
+//                       Abre TX (playback) y RX (micrófono) en el mismo I2S0.
+//    8. tts_init      — carga voz eSpeak-NG desde SD (Fase 6A)
+//                       Reproduce "Sentis Encendido" como confirmación de arranque.
+//    9. mic_init      — tarea de captura: ES8311 ADC → chunks mono → link_send_audio()
+//   10. vision_init   — I2C + MIPI CSI-2 (Fase 5)
+//   11. ocr_init      — captura+JPEG, pedido de lectura vía app companion (Fase 2)
+//   12. monitor_init  — transmisión de frames para desarrollo (Fase 5)
+//   13. proximity_task — fusiona LiDAR + visión + háptica
 //
-// Nota Fase 4: stt_init() necesita que los modelos estén en la partición "model"
-// (partitions.csv). Tras un build limpio ejecutar:
-//   del sdkconfig && idf.py set-target esp32p4 && idf.py flash
+// Fase 2 (ver sentis-stability-integration-plan.md): el reconocimiento de voz
+// (antes ESP-SR/MultiNet7, inglés-only) y el OCR (antes pp_ocr_v6, crasheaba
+// tras ~46s) se retiraron por completo del ESP32 — ahora corren en la app
+// Android companion (Vosk + ML Kit), conectada por el SoftAP del C6.
 // -----------------------------------------------------------------------------
 void app_main(void)
 {
@@ -225,7 +207,7 @@ void app_main(void)
 
     lidar_init();
 
-    // ---- MILESTONE 0 (en validación): SoftAP para la app companion ----
+    // ---- SoftAP para la app companion ----
     // wifi_init() levanta el ESP32-C6 (esp_hosted, SDIO) + SoftAP. Se llama
     // ANTES de storage_init(): hay un bug conocido de ESP-IDF (issue #16233)
     // donde SDMMC (SD) y esp_hosted (también SDIO) se pisan si se inicializan
@@ -246,16 +228,17 @@ void app_main(void)
         cp_ota_check_and_update();
     }
 
-    // ---- MILESTONE 2 (en validación): protocolo hacia la app companion ----
+    // ---- Fase 2: protocolo hacia la app companion ----
     // link_init() levanta el servidor TCP (puerto components/link/link.h,
-    // LINK_TCP_PORT) sobre el SoftAP. Todavía no está conectado a mic/ocr
-    // reales — corre una tarea de autotest temporal (ver link.c) para
-    // validar el protocolo con tools/link_test_client.py. No fatal.
-    // DIAGNOSTICO TEMPORAL (2026-09-18): comentado para aislar si el trafico
-    // activo de link (audio 1/s + JPEG 10s del autotest) es lo que rompe la
-    // camara, o si alcanza con que esp_hosted este arriba sin trafico. Volver
-    // a habilitar despues de la prueba.
-    // link_init(on_link_command);
+    // LINK_TCP_PORT) sobre el SoftAP. on_link_command() reemplaza al viejo
+    // on_stt_result — los comandos de voz ahora se reconocen del lado del
+    // celular (Vosk), nunca on-device. No fatal si falla.
+    //
+    // El bug histórico "la cámara nunca entrega frames con el C6 activo" ya
+    // se resolvió (ver sentis-stability-integration-plan.md, Fase 1 — el CP
+    // corría en modo SW_AGGR, ahora en STREAM) — ya no hace falta mantener
+    // esto deshabilitado para aislar esa causa.
+    link_init(on_link_command);
 
     // ---- Fase 2: almacenamiento y audio ----
     storage_init();   // no fatal — logs error si no hay tarjeta
@@ -276,39 +259,36 @@ void app_main(void)
         }
     }
 
-    // ---- Fase 4: reconocimiento de voz (STT local via ESP-SR) ----
-    // stt_init carga los modelos MultiNet desde la partición "model".
-    // No fatal: si la partición no existe o está vacía, se loguea el error
-    // y el sistema sigue operando sin STT.
-    if (stt_init(on_stt_result) == ESP_OK) {
-        // mic_init arranca la tarea de captura: I2S0 RX → downmix → stt_feed()
-        // La tarea alimenta ESP-SR sincrónicamente — sin latencia adicional.
-        mic_init(stt_feed);
-    }
+    // ---- Fase 2: micrófono → app companion ----
+    // mic_init arranca la tarea de captura: I2S0 RX (ES8311 ADC) → downmix a
+    // mono → link_send_audio() manda cada chunk al celular por TCP. Ya no hay
+    // reconocimiento de voz on-device (ESP-SR/MultiNet se retiró — el celular
+    // corre Vosk sobre este mismo stream de PCM). link_send_audio() no
+    // bloquea y no falla si todavía no hay celular conectado (descarta el
+    // chunk), así que no hace falta esperar a que link_init() haya
+    // encontrado un cliente antes de arrancar la captura.
+    mic_init(link_send_audio);
 
     // ---- Fase 5: cámara ----
     vision_init();
 
-    // ---- Fase 7: lectura OCR on-device (pp_ocr_v6 desde SD) ----
-    // ocr_init carga detector+reconocedor desde la SD (ruta fija por Kconfig,
-    // ver ocr.h) y deja la tarea de lectura lista pero inactiva hasta el
-    // comando de voz "start reading" (ver on_stt_result). No fatal: si faltan
-    // los archivos en la SD, se loguea el error y el sistema sigue operando
-    // sin OCR.
-    if (storage_is_mounted()) {
-        ocr_init();
-    }
+    // ---- Fase 2: lectura de texto vía app companion ----
+    // ocr_init arma los buffers de captura+JPEG y deja la tarea de lectura
+    // lista pero inactiva hasta el comando "start reading" (ver
+    // on_link_command). Ya no depende de la SD (el reconocimiento corre en
+    // el celular con ML Kit) — se llama sin condición.
+    ocr_init();
 
     // Monitor visual solo para desarrollo (menuconfig → SENTIS Monitor).
     // Deshabilitar (CONFIG_MONITOR_ENABLED=n) antes de un build de producción.
     monitor_init();
 
     // DIAGNÓSTICO TEMPORAL — margen real de PSRAM una vez que todos los
-    // componentes ya reservaron su memoria (modelos pp_ocr_v6, buffers de
-    // vision/ocr, TTS, STT, audio). Se usa para decidir si alcanza para subir
-    // la resolución de captura de la cámara (800x640 → 800x1280 RAW8, o
-    // RAW10 1280x960/1920x1080) sin quedarse sin memoria en tiempo de
-    // ejecución. Quitar una vez tomada la decisión.
+    // componentes ya reservaron su memoria (buffers de vision/ocr, TTS,
+    // audio). Se usa para decidir si alcanza para subir la resolución de
+    // captura de la cámara (800x640 → 800x1280 RAW8, o RAW10 1280x960/
+    // 1920x1080) sin quedarse sin memoria en tiempo de ejecución. Quitar una
+    // vez tomada la decisión.
     ESP_LOGI("sentis", "PSRAM libre tras init: %u bytes (bloque contiguo mas grande: %u bytes)",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));

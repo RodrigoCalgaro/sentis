@@ -8,39 +8,41 @@ extern "C" {
 #endif
 
 // =============================================================================
-// ocr — lectura de texto on-device (esp-dl pp_ocr_v6) con salida por voz.
+// ocr — lectura de texto vía la app Android companion (ML Kit del lado del
+// celular), con salida por voz en el propio ESP32.
+//
+// Fase 2 (ver sentis-stability-integration-plan.md): este componente ya NO
+// corre inferencia on-device — la inferencia real (antes esp-dl/pp_ocr_v6,
+// retirada por crashes y baja precisión) se retiró por completo. Ahora solo
+// captura un frame, lo codifica a JPEG por hardware (esp_driver_jpeg) y lo
+// manda por components/link a la app, que responde con el texto reconocido.
 //
 // Flujo:
-//   ocr_init()            → carga detector + reconocedor .espdl (una sola
-//                           vez, en boot) y crea la tarea de lectura,
-//                           inicialmente inactiva.
+//   ocr_init()            → arma los buffers de captura/JPEG (una sola vez,
+//                           en boot) y crea la tarea de lectura, inicialmente
+//                           inactiva. Ya no depende de la SD.
 //   ocr_reading_start()   → señal no bloqueante: despierta la tarea y arranca
-//                           el loop captura→detecta→reconoce→tts_speak().
+//                           el loop captura→JPEG→link_request_ocr_text()→tts_speak().
 //   ocr_reading_stop()    → señal no bloqueante: pide detener el loop en el
 //                           próximo punto de interrupción seguro. La locución
 //                           en curso (tts_speak) termina normalmente — no se
 //                           cancela a mitad de frase.
 //
-// La ruta de los modelos en la SD NO es un parámetro en runtime: pp_ocr_v6
-// (componente vendorizado espressif/pp_ocr_v6) construye el path internamente
-// a partir de Kconfig — "menuconfig → Component config → models: pp_ocr_v6 →
-// model location = sdcard", directorio por defecto "models/p4" relativo al
-// punto de montaje (ver sdcard_files/README.md y sdkconfig.defaults).
-//
-// Requiere storage_init() (modelos en SD), vision_init() (captura de frames)
-// y tts_init() (locución) completados antes de llamar ocr_init().
+// Requiere vision_init() (captura de frames), tts_init() (locución) y
+// link_init() (transporte hacia la app) completados antes de llamar
+// ocr_init() — o al menos antes del primer "start reading" real.
 //
 // Todas las funciones son seguras de llamar aunque ocr_init() no haya
 // corrido o haya fallado (no-op).
 // =============================================================================
 
-// Carga los modelos pp_ocr_v6 (detector + reconocedor) desde la SD (ruta fija
-// por Kconfig, ver arriba) y crea la tarea de lectura en espera.
+// Arma los buffers de captura+JPEG y crea la tarea de lectura en espera.
 // No fatal para el resto del sistema si falla: logea el error y retorna.
 esp_err_t ocr_init(void);
 
 // Arranca el loop de lectura. Idempotente: no-op si ya está leyendo.
-// No bloqueante — seguro de llamar desde mic_task (callback de stt).
+// No bloqueante — seguro de llamar desde la tarea de recepción de link
+// (callback de comando, ver on_link_command en main/sentis.c).
 void ocr_reading_start(void);
 
 // Pide detener el loop de lectura. Idempotente: no-op si ya está detenido.

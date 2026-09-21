@@ -72,11 +72,11 @@ static uint8_t               *s_jpeg_out   = NULL;
 static uint8_t                s_row_tmp[MONITOR_W * 2];  // 1 fila RGB565, en RAM interna
 
 // El sensor está montado rotado respecto a la vista del usuario — vision.c
-// entrega el frame en la orientación cruda del sensor. El pipeline de OCR ya
-// corrige esto (espejado vertical, ver ocr_preprocess.c); acá se aplica la
-// misma corrección mano a mano pero sin desempacar a RGB888, para que lo que
-// se vea en monitor_viewer.py sea representativo de lo que recibe el modelo,
-// no el crudo del sensor. Al ser un espejado vertical puro (intercambio de
+// entrega el frame en la orientación cruda del sensor. components/ocr
+// aplica esta misma corrección (espejado vertical) antes de mandar el frame
+// a la app companion; acá se aplica mano a mano para que lo que se vea en
+// monitor_viewer.py sea representativo de lo que recibe la app, no el crudo
+// del sensor. Al ser un espejado vertical puro (intercambio de
 // filas completas, sin tocar el orden de los píxeles dentro de cada fila) se
 // hace in-place con una sola fila de scratch — evita un segundo buffer de
 // PSRAM del tamaño de s_frame_copy, que ya de por sí se redujo a

@@ -4,13 +4,11 @@
 # Offset 0x8000: esta tabla (CONFIG_PARTITION_TABLE_OFFSET=0x8000)
 #
 # Cambios respecto al default single-app:
-#   - factory extendida a 6 MB (firmware con ESP-SR + eSpeak-NG + esp-dl/pp_ocr_v6
-#     linkados — el binario con OCR on-device ronda ~4.1 MB, se deja margen para
-#     crecer sin tener que volver a tocar esta tabla)
-#
-# Los modelos ESP-SR y pp_ocr_v6 se cargan desde la microSD (/sdcard/sr_model/,
-# /sdcard/models/p4/) en lugar de una partición flash, eliminando esa restricción
-# de tamaño. Ver sdcard_files/README.md.
+#   - factory extendida a 6 MB — originalmente por el binario con ESP-SR +
+#     eSpeak-NG + esp-dl/pp_ocr_v6 linkados (~4.1 MB). ESP-SR y pp_ocr_v6 se
+#     retiraron en la Fase 2 (ver sentis-stability-integration-plan.md) — el
+#     binario actual es bastante más chico, se deja el tamaño así por ahora
+#     (sobra margen, no hace falta volver a tocar esta tabla).
 #
 # slave_fw (2026-09-18): binario del firmware del co-procesador ESP32-C6
 #   (ver carpeta coprocessor/, proyecto ESP-IDF separado target esp32c6).

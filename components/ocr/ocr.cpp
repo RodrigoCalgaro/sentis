@@ -1,88 +1,70 @@
 #include "ocr.h"
-#include "ocr_preprocess.h"
 #include "vision.h"
 #include "tts.h"
-#include "pp_ocr_v6.hpp"
-#include "sdkconfig.h"
+#include "link.h"
+#include "driver/jpeg_encode.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include <cstdio>
 #include <cstring>
-#include <filesystem>
+#include <inttypes.h>
 
 static const char *TAG = "ocr";
 
-#ifndef CONFIG_BSP_SD_MOUNT_POINT
-#define CONFIG_BSP_SD_MOUNT_POINT "/sdcard"
-#endif
-
 // -----------------------------------------------------------------------------
-// model_file_looks_valid — chequeo defensivo previo a instanciar Det/Rec.
-//
-// pp_ocr_v6::Det::Det()/Rec::Rec() (vendorizado, managed_components/
-// espressif__pp_ocr_v6/pp_ocr_v6.cpp) llaman dl::Model::minimize() de forma
-// incondicional apenas construyen el modelo, SIN chequear si la carga del
-// .espdl falló. Si el archivo no existe o está vacío/corrupto,
-// dl::Model queda en un estado inválido y minimize() crashea el equipo entero
-// (Guru Meditation / Load access fault) — un simple archivo faltante en la SD
-// reinicia el dispositivo en un loop infinito en cada boot, tumbando también
-// haptics/LiDAR/audio que dependen de que app_main() termine de arrancar.
-//
-// Mitigación de nuestro lado ya que no podemos parchear el código vendorizado
-// de forma sostenible: validar existencia + tamaño + firma mágica de cada
-// .espdl ANTES de construir Det/Rec, replicando la misma verificación que
-// hace fbs_loader.cpp (get_model_format) para no instanciar nada si va a
-// fallar. Si algo no está bien, OCR queda deshabilitado pero el resto del
-// sistema arranca normal — mismo patrón "no fatal" que tts_init/stt_init.
+// Fase 2 (migración a app companion, ver sentis-stability-integration-plan.md):
+// este componente ya NO corre inferencia on-device (pp_ocr_v6 se retiró por
+// crashes y baja precisión — ver project_ocr_pp_ocr_v6.md). Ahora es
+// exclusivamente captura + codificación JPEG por hardware + pedido/respuesta
+// por components/link hacia la app Android (ML Kit hace el OCR real del lado
+// del teléfono). tts_speak() sigue corriendo en el ESP32 — el celular solo
+// hace vision + reconocimiento, nunca reproduce audio.
 // -----------------------------------------------------------------------------
-static bool model_file_looks_valid(const char *filename)
-{
-    auto path = std::filesystem::path(CONFIG_BSP_SD_MOUNT_POINT) / CONFIG_PP_OCR_V6_MODEL_SDCARD_DIR / filename;
 
-    FILE *f = fopen(path.c_str(), "rb");
-    if (!f) {
-        ESP_LOGE(TAG, "no se pudo abrir %s", path.c_str());
-        return false;
-    }
+// Buffer de salida JPEG — dimensionado con margen sobre lo medido en
+// components/monitor/monitor.c (que a 320x240/quality=30 usa 32KB): a
+// 1280x960 (16x más píxeles) y quality=60 (mejor legibilidad para el OCR del
+// celular que la vista previa de desarrollo), un frame típico con texto real
+// entra cómodo. Si jpeg_encoder_process no entra en este buffer, falla
+// limpio (log + se salta ese frame) — no hay corrupción de memoria.
+#define OCR_JPEG_OUT_SIZE   (512 * 1024)
+#define OCR_REQUEST_TIMEOUT_MS  8000
 
-    char magic[5] = {0};
-    size_t n = fread(magic, 1, 4, f);
-    fclose(f);
-    if (n != 4) {
-        ESP_LOGE(TAG, "%s: archivo vacío o truncado", path.c_str());
-        return false;
-    }
-
-    static const char *kValidMagics[] = {"EDL1", "EDL2", "PDL1", "PDL2", "PDL3"};
-    for (const char *m : kValidMagics) {
-        if (strcmp(magic, m) == 0) return true;
-    }
-    ESP_LOGE(TAG, "%s: firma inválida \"%s\" (¿copia incompleta a la SD?)", path.c_str(), magic);
-    return false;
-}
-
-// ocr_preprocess_rgb565_to_rgb888 ya no hace downsampling (el ISP entrega
-// color real por píxel, ya no hace falta promediar bloques para debayer) —
-// con el modo RAW10 binning actual la corrección de orientación es un
-// espejado horizontal puro (ver comentario en ocr_preprocess.h), así que las
-// dimensiones coinciden con el frame crudo (VISION_FRAME_W x VISION_FRAME_H).
-static constexpr int kImgW = VISION_FRAME_W; // 1280
-static constexpr int kImgH = VISION_FRAME_H; // 960
-
-// Mismo umbral que usa pp_ocr_v6::PPOCRV6 internamente para descartar
-// reconocimientos de baja confianza (no usamos PPOCRV6 directamente porque
-// no expone puntos de interrupción entre cajas — ver nota en ocr_task).
-static constexpr float kRecScoreThreshold = pp_ocr_v6::PPOCRV6::default_rec_score_threshold;
-
-static pp_ocr_v6::Det *s_det = nullptr;
-static pp_ocr_v6::Rec *s_rec = nullptr;
 static SemaphoreHandle_t s_start_sem = nullptr;
 static volatile bool s_stop_req = false;
 static volatile bool s_reading = false;
 static bool s_initialized = false;
+
+static jpeg_encoder_handle_t s_enc = nullptr;
+static uint8_t *s_raw      = nullptr;  // RGB565, VISION_FRAME_SZ (captura directa de vision)
+static uint8_t *s_jpeg_out = nullptr;  // salida JPEG codificada
+static uint8_t  s_row_tmp[VISION_FRAME_W * 2];  // 1 fila RGB565, en RAM interna
+
+// -----------------------------------------------------------------------------
+// mirror_rgb565_inplace — el sensor está montado rotado respecto a la vista
+// del usuario (ver components/ocr_preprocess original, ahora retirado, y el
+// mismo comentario en components/monitor/monitor.c). Con el modo de captura
+// actual (RAW10 binning 1280x960) la corrección es un espejado vertical puro
+// — sin esto, el frame que recibe la app companion queda al revés respecto a
+// lo que el usuario está mirando, y ML Kit no es invariante a esa
+// orientación (mismo problema, ya documentado, que tenía pp_ocr_v6 antes de
+// aplicar esta misma corrección). Si se cambia de modo de captura, volver a
+// verificar con una foto real (tools/monitor_viewer.py) antes de asumir que
+// esto sigue siendo correcto.
+// -----------------------------------------------------------------------------
+static void mirror_rgb565_inplace(uint8_t *buf, int w, int h)
+{
+    size_t row_bytes = (size_t)w * 2;
+    for (int y = 0; y < h / 2; y++) {
+        uint8_t *row_top = buf + (size_t)y * row_bytes;
+        uint8_t *row_bot = buf + (size_t)(h - 1 - y) * row_bytes;
+        memcpy(s_row_tmp, row_top, row_bytes);
+        memcpy(row_top, row_bot, row_bytes);
+        memcpy(row_bot, s_row_tmp, row_bytes);
+    }
+}
 
 // -----------------------------------------------------------------------------
 // ocr_task — tarea de vida larga (creada una sola vez en ocr_init). Queda
@@ -96,19 +78,17 @@ static bool s_initialized = false;
 // -----------------------------------------------------------------------------
 static void ocr_task(void *arg)
 {
-    uint8_t *raw = (uint8_t *)heap_caps_malloc(VISION_FRAME_SZ, MALLOC_CAP_SPIRAM);
-    uint8_t *rgb = (uint8_t *)heap_caps_malloc((size_t)kImgW * kImgH * 3, MALLOC_CAP_SPIRAM);
-    if (!raw || !rgb) {
-        ESP_LOGE(TAG, "sin memoria PSRAM para buffers de captura (raw=%p rgb=%p)", raw, rgb);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    dl::image::img_t img = {
-        .data = rgb,
-        .width = (uint16_t)kImgW,
-        .height = (uint16_t)kImgH,
-        .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888,
+    // Orden de campos igual a la declaración de jpeg_encode_cfg_t (driver/
+    // jpeg_encode.h) — a diferencia de C, el compilador de C++ (-Werror,
+    // -Wmissing-field-initializers) exige orden e inicialización completa
+    // en un inicializador designado.
+    const jpeg_encode_cfg_t enc_cfg = {
+        .height        = VISION_FRAME_H,
+        .width         = VISION_FRAME_W,
+        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
+        .image_quality = 60,
+        .pixel_reverse = false,
     };
 
     while (true) {
@@ -117,60 +97,48 @@ static void ocr_task(void *arg)
         s_stop_req = false;
         // Pausar la heurística de posición de vision_task durante la lectura:
         // su resultado no se usa (proximity_task ignora vision mientras hay
-        // lectura OCR activa) y libera CPU/PSRAM para Det/Rec — ver
+        // lectura OCR activa) y libera CPU para el resto del pipeline — ver
         // vision_set_analysis_paused() en vision.h.
         vision_set_analysis_paused(true);
         ESP_LOGI(TAG, "lectura iniciada");
 
         while (!s_stop_req) {
-            if (!vision_copy_display_frame(raw, VISION_FRAME_SZ)) {
+            if (!vision_copy_display_frame(s_raw, VISION_FRAME_SZ)) {
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
-            ocr_preprocess_rgb565_to_rgb888(raw, VISION_FRAME_W, VISION_FRAME_H, rgb);
+            mirror_rgb565_inplace(s_raw, VISION_FRAME_W, VISION_FRAME_H);
             if (s_stop_req) break;
 
-            // DIAG TEMPORAL — investigando un abort() en __cxa_allocate_exception
-            // visto tras ~46s de lectura continua, sin que "cajas detectadas"
-            // (más abajo) llegue a imprimirse ni una vez. Sospecha: una sola
-            // llamada a s_det->run() (vendorizado) nunca retorna, en vez de
-            // acumularse por muchos ciclos. Este "iniciando" antes del run()
-            // confirma si el problema está DENTRO de esa llamada. Quitar una
-            // vez confirmada/resuelta la causa.
-            ESP_LOGW(TAG, "DIAG: iniciando s_det->run()");
-            auto boxes = s_det->run(img);
-            ESP_LOGI(TAG, "%d caja(s) de texto detectadas", (int)boxes.size());
-            // DIAG TEMPORAL — investigando un abort() en __cxa_allocate_exception
-            // (throw sin CONFIG_COMPILER_CXX_EXCEPTIONS) visto tras ~46s de
-            // lectura continua. Sospecha: fragmentación de PSRAM por los
-            // vector<Box>/std::string reservados en cada ciclo. Este log deja
-            // ver si la PSRAM libre/bloque contiguo cae progresivamente ciclo
-            // a ciclo. Quitar una vez confirmada/resuelta la causa.
-            ESP_LOGW(TAG, "DIAG: PSRAM libre=%u bloque_max=%u",
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            uint32_t jpeg_size = 0;
+            esp_err_t enc_ret = jpeg_encoder_process(s_enc, &enc_cfg,
+                                                       s_raw, VISION_FRAME_SZ,
+                                                       s_jpeg_out, OCR_JPEG_OUT_SIZE,
+                                                       &jpeg_size);
+            if (enc_ret != ESP_OK || jpeg_size == 0) {
+                ESP_LOGW(TAG, "jpeg encode: %s (out=%" PRIu32 ")",
+                         esp_err_to_name(enc_ret), jpeg_size);
+                vTaskDelay(pdMS_TO_TICKS(400));
+                continue;
+            }
             if (s_stop_req) break;
 
-            for (const auto &box : boxes) {
-                if (s_stop_req) break;
-                float score = 0.0f;
-                std::string text = s_rec->run(img, box, &score);
-                if (s_stop_req) break;
-                // Log incondicional (diagnóstico): así se ve si el reconocedor
-                // realmente falla (texto vacío/score bajo) o si el filtro de
-                // umbral está descartando algo que sí valdría la pena hablar.
-                ESP_LOGI(TAG, "recognizer: score=%.2f texto=\"%s\"", score, text.c_str());
-                if (score >= kRecScoreThreshold && !text.empty()) {
-                    tts_speak(text.c_str());
+            char text[LINK_OCR_TEXT_MAX];
+            esp_err_t ret = link_request_ocr_text(s_jpeg_out, jpeg_size, text, sizeof(text),
+                                                   pdMS_TO_TICKS(OCR_REQUEST_TIMEOUT_MS));
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "app respondio: \"%s\"", text);
+                if (text[0] != '\0') {
+                    tts_speak(text);
                 }
-                // El wrapper vendorizado PPOCRV6::run() cede CPU entre cajas
-                // (pp_ocr_v6.cpp) — este loop lo reimplementa manualmente para
-                // tener puntos de corte por s_stop_req (ver comentario arriba)
-                // y ese yield se había perdido. Sin él, una imagen con varias
-                // cajas de texto puede monopolizar la CPU sin ceder por
-                // suficiente tiempo como para inanir IDLE (ver crash de
-                // watchdog documentado en sentis.c/proximity_task).
-                vTaskDelay(1);
+            } else if (ret == ESP_ERR_NOT_FOUND) {
+                ESP_LOGW(TAG, "sin celular conectado — pausando capturas");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                continue;
+            } else if (ret == ESP_ERR_TIMEOUT) {
+                ESP_LOGW(TAG, "la app no respondio a tiempo (%d ms)", OCR_REQUEST_TIMEOUT_MS);
+            } else {
+                ESP_LOGW(TAG, "link_request_ocr_text: %s", esp_err_to_name(ret));
             }
 
             vTaskDelay(pdMS_TO_TICKS(400)); // cooldown entre ciclos de captura
@@ -186,41 +154,57 @@ esp_err_t ocr_init(void)
 {
     if (s_initialized) return ESP_ERR_INVALID_STATE;
 
-    // Validar los .espdl ANTES de tocar Det/Rec — ver comentario de
-    // model_file_looks_valid(): si esto se salta y el archivo falta o está
-    // roto, el equipo entero crashea y reinicia en loop en cada boot.
-    if (!model_file_looks_valid("pp_ocr_v6_det_s8.espdl") ||
-        !model_file_looks_valid("pp_ocr_v6_rec_s16.espdl")) {
-        ESP_LOGE(TAG,
-                 "modelos pp_ocr_v6 no encontrados/inválidos en %s/%s — "
-                 "copiar sdcard_files/models/ a la SD (ver sdcard_files/README.md). "
-                 "OCR deshabilitado, el resto del sistema sigue funcionando.",
-                 CONFIG_BSP_SD_MOUNT_POINT, CONFIG_PP_OCR_V6_MODEL_SDCARD_DIR);
-        return ESP_ERR_NOT_FOUND;
-    }
-
     s_start_sem = xSemaphoreCreateBinary();
     if (!s_start_sem) return ESP_ERR_NO_MEM;
 
-    s_det = new pp_ocr_v6::Det();
-    s_rec = new pp_ocr_v6::Rec();
+    s_raw = (uint8_t *)heap_caps_malloc(VISION_FRAME_SZ, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    s_jpeg_out = (uint8_t *)heap_caps_malloc(OCR_JPEG_OUT_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    if (!s_raw || !s_jpeg_out) {
+        ESP_LOGE(TAG, "sin PSRAM para buffers (raw=%p jpeg_out=%p)", s_raw, s_jpeg_out);
+        heap_caps_free(s_raw);
+        heap_caps_free(s_jpeg_out);
+        s_raw = nullptr;
+        s_jpeg_out = nullptr;
+        vSemaphoreDelete(s_start_sem);
+        s_start_sem = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
+    const jpeg_encode_engine_cfg_t eng_cfg = {
+        .intr_priority = 0,
+        .timeout_ms    = 500,
+        .flags         = {},
+    };
+    esp_err_t enc_ret = jpeg_new_encoder_engine(&eng_cfg, &s_enc);
+    if (enc_ret != ESP_OK) {
+        ESP_LOGE(TAG, "jpeg_new_encoder_engine: %s", esp_err_to_name(enc_ret));
+        heap_caps_free(s_raw);
+        heap_caps_free(s_jpeg_out);
+        s_raw = nullptr;
+        s_jpeg_out = nullptr;
+        vSemaphoreDelete(s_start_sem);
+        s_start_sem = nullptr;
+        return enc_ret;
+    }
 
     // Pineada al core 1 junto con vision_task — separada a propósito del core 0
     // (mic_task/lidar_task). Ver nota de pinning en components/mic/mic.c.
-    BaseType_t ok = xTaskCreatePinnedToCore(ocr_task, "ocr_reading", 32768, NULL, 3, NULL, 1);
+    BaseType_t ok = xTaskCreatePinnedToCore(ocr_task, "ocr_reading", 8192, NULL, 3, NULL, 1);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "no hay memoria para la tarea de lectura");
-        delete s_det;
-        delete s_rec;
-        s_det = nullptr;
-        s_rec = nullptr;
+        jpeg_del_encoder_engine(s_enc);
+        s_enc = nullptr;
+        heap_caps_free(s_raw);
+        heap_caps_free(s_jpeg_out);
+        s_raw = nullptr;
+        s_jpeg_out = nullptr;
         vSemaphoreDelete(s_start_sem);
         s_start_sem = nullptr;
         return ESP_ERR_NO_MEM;
     }
 
     s_initialized = true;
-    ESP_LOGI(TAG, "listo — modelos pp_ocr_v6 cargados, esperando \"start reading\"");
+    ESP_LOGI(TAG, "listo — captura+JPEG+link, esperando \"start reading\"");
     return ESP_OK;
 }
 

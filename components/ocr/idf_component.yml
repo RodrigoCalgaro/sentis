@@ -1,10 +1,7 @@
 ## IDF Component Manager Manifest File — componente ocr
-## Lectura de texto on-device (pp_ocr_v6) para ESP32-P4, modelos cargados
-## desde la SD (ver sdcard_files/README.md), igual que espeak-ng-data y sr_model.
+## Fase 2 (migración a app companion): ya no depende de pp_ocr_v6/esp-dl —
+## la inferencia de OCR corre en el celular (ML Kit). Este componente solo
+## captura+codifica JPEG (esp_driver_jpeg, sin dependencia externa) y usa
+## components/link para el pedido/respuesta.
 dependencies:
   idf: ">=5.3"
-
-  ## pp_ocr_v6 (detector + reconocedor de texto, exclusivo ESP32-P4) es un
-  ## paquete separado del framework base — depende de esp-dl transitivamente.
-  espressif/pp_ocr_v6:
-    version: "*"

@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "ocr.cpp" "ocr_preprocess.c"
+    SRCS "ocr.cpp"
     INCLUDE_DIRS "."
-    REQUIRES vision tts pp_ocr_v6 esp-dl freertos
+    REQUIRES vision tts link esp_driver_jpeg freertos
 )
