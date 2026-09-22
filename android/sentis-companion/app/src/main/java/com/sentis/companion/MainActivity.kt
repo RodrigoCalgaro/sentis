@@ -29,9 +29,13 @@ private const val SENTIS_PASSWORD = "sentisglasses"
 // perder la conectividad normal del resto del teléfono mientras se usa la
 // app — decisión del usuario 2026-09-21.
 //
-// Los botones de start/stop reading y el campo de texto de OCR quedan como
-// vía manual de prueba (Fase 3) — Vosk/ML Kit son la vía automática, ambas
-// mandan por el mismo LinkClient así que no hay conflicto entre usarlas.
+// Los botones de start/stop reading, detectar color y el campo de texto de
+// OCR quedan como vía manual de prueba (Fase 3) — Vosk/ML Kit/ColorDetector
+// son la vía automática, todas mandan por el mismo LinkClient así que no hay
+// conflicto entre usarlas. La detección de color no usa ningún modelo de IA
+// (ver ColorDetector): color dominante por análisis HSV, decisión del
+// usuario 2026-09-22 para no depender de API keys/HTTP externo, y porque el
+// teléfono de prueba (Moto G20) no soporta Gemini Nano (sin AICore).
 // =============================================================================
 class MainActivity : Activity() {
 
@@ -49,6 +53,7 @@ class MainActivity : Activity() {
     private var client: LinkClient? = null
     private var voiceRecognizer: VoiceCommandRecognizer? = null
     private var ocrRecognizer: OcrTextRecognizer? = null
+    private var colorDetector: ColorDetector? = null
     private var ttsSpeaker: TtsSpeaker? = null
     private var sentisNetworkManager: SentisNetworkManager? = null
 
@@ -76,6 +81,9 @@ class MainActivity : Activity() {
         ocrTextInput = findViewById(R.id.ocrTextInput)
 
         ocrRecognizer = OcrTextRecognizer(
+            onLog = { msg -> runOnUiThread { appendLog(msg) } },
+        )
+        colorDetector = ColorDetector(
             onLog = { msg -> runOnUiThread { appendLog(msg) } },
         )
         ttsSpeaker = TtsSpeaker(
@@ -121,6 +129,19 @@ class MainActivity : Activity() {
                     },
                 )
             },
+            onColorRequest = { jpeg ->
+                runOnUiThread {
+                    appendLog("Pedido de color recibido (${jpeg.size} bytes), analizando...")
+                }
+                colorDetector?.detect(
+                    jpeg,
+                    onFrame = { bitmap -> runOnUiThread { ocrPreviewImage.setImageBitmap(bitmap) } },
+                    onResult = { colorName ->
+                        ttsSpeaker?.speak("El color principal de la imagen es el $colorName")
+                        client?.sendColorResult(colorName)
+                    },
+                )
+            },
         )
 
         voiceRecognizer = VoiceCommandRecognizer(
@@ -163,6 +184,9 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.stopReadingButton).setOnClickListener {
             sendCommand(COMMAND_STOP_READING, "parar (manual)")
         }
+        findViewById<Button>(R.id.detectColorButton).setOnClickListener {
+            sendCommand(COMMAND_DETECT_COLOR, "detectar color (manual)")
+        }
         findViewById<Button>(R.id.ocrReplyButton).setOnClickListener {
             val text = ocrTextInput.text.toString()
             if (text.isNotBlank()) {
@@ -190,6 +214,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         client?.disconnect()
         voiceRecognizer?.close()
+        colorDetector?.close()
         ttsSpeaker?.close()
         sentisNetworkManager?.release()
         super.onDestroy()

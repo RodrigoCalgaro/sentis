@@ -22,10 +22,16 @@ extern "C" {
 // Mensajes ESP32 -> celular:
 //   LINK_MSG_AUDIO       PCM mono 16kHz 16-bit (mismo chunk que produce mic)
 //   LINK_MSG_OCR_REQUEST JPEG de un frame (pedido de lectura OCR)
+//   LINK_MSG_COLOR_REQUEST JPEG de un frame (pedido de deteccion de color,
+//                        ver components/ocr — mismo capturador que OCR, un
+//                        solo pedido/respuesta en vez de un loop)
 // Mensajes celular -> ESP32:
 //   LINK_MSG_COMMAND     comando de voz reconocido (Vosk, en la app)
 //   LINK_MSG_OCR_RESULT  texto reconocido (ML Kit, en la app) para el ultimo
 //                        LINK_MSG_OCR_REQUEST pendiente
+//   LINK_MSG_COLOR_RESULT nombre del color dominante (analisis HSV on-device,
+//                        en la app) para el ultimo LINK_MSG_COLOR_REQUEST
+//                        pendiente
 //   LINK_MSG_TTS_AUDIO   PCM mono 16kHz 16-bit sintetizado por el TTS nativo
 //                        de Android (mejor cadencia que eSpeak-NG) — se
 //                        reproduce por el parlante del propio ESP32, no el
@@ -52,6 +58,7 @@ extern "C" {
 #define LINK_TCP_PORT          3333
 #define LINK_COMMAND_TEXT_MAX  64
 #define LINK_OCR_TEXT_MAX      256
+#define LINK_COLOR_TEXT_MAX    32
 
 typedef struct {
     int  command_id;
@@ -85,6 +92,15 @@ void link_send_audio(const int16_t *samples, size_t count);
 esp_err_t link_request_ocr_text(const uint8_t *jpeg, size_t jpeg_len,
                                  char *out_text, size_t out_text_max,
                                  TickType_t timeout_ticks);
+
+// Como link_request_ocr_text(), pero para el pedido de deteccion de color
+// (ver components/ocr::ocr_detect_color()): manda un frame JPEG como
+// LINK_MSG_COLOR_REQUEST y bloquea hasta recibir el nombre del color
+// (LINK_MSG_COLOR_RESULT) o timeout_ticks. out_text queda con un string
+// vacio si no hubo respuesta.
+esp_err_t link_request_color(const uint8_t *jpeg, size_t jpeg_len,
+                              char *out_text, size_t out_text_max,
+                              TickType_t timeout_ticks);
 
 #ifdef __cplusplus
 }

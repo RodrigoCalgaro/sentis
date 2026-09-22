@@ -30,6 +30,8 @@ typedef enum {
     LINK_MSG_OCR_RESULT = 3,
     LINK_MSG_COMMAND = 4,
     LINK_MSG_TTS_AUDIO = 5,
+    LINK_MSG_COLOR_REQUEST = 6,
+    LINK_MSG_COLOR_RESULT = 7,
 } link_msg_type_t;
 
 // Payload de un chunk de audio TTS recibido del celular. count <=
@@ -48,11 +50,13 @@ typedef struct __attribute__((packed)) {
 
 static SemaphoreHandle_t s_mutex;           // guarda s_client_fd + serializa sends
 static SemaphoreHandle_t s_ocr_result_sem;  // dada por la recepcion cuando llega OCR_RESULT
+static SemaphoreHandle_t s_color_result_sem;  // dada por la recepcion cuando llega COLOR_RESULT
 static QueueHandle_t s_audio_queue;
 static QueueHandle_t s_tts_audio_queue;
 static link_command_cb_t s_command_cb;
 static int s_client_fd = -1;
 static char s_ocr_result_text[LINK_OCR_TEXT_MAX];
+static char s_color_result_text[LINK_COLOR_TEXT_MAX];
 
 // Scratch estatico para el chunk de LINK_MSG_TTS_AUDIO entrante — sizeof(tts_audio_chunk_t)
 // (~3.2 KB) no entra comodo en el stack de 4 KB de link_server_task, así que
@@ -174,6 +178,37 @@ esp_err_t link_request_ocr_text(const uint8_t *jpeg, size_t jpeg_len,
     return ESP_OK;
 }
 
+esp_err_t link_request_color(const uint8_t *jpeg, size_t jpeg_len,
+                              char *out_text, size_t out_text_max,
+                              TickType_t timeout_ticks)
+{
+    if (out_text && out_text_max > 0) {
+        out_text[0] = '\0';
+    }
+    if (!link_is_client_connected()) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    // Drenar una señal vieja por si quedó de un pedido anterior que hizo
+    // timeout justo cuando la respuesta llegaba (mismo criterio que
+    // link_request_ocr_text()).
+    xSemaphoreTake(s_color_result_sem, 0);
+
+    esp_err_t ret = link_send_framed(LINK_MSG_COLOR_REQUEST, jpeg, (uint32_t)jpeg_len);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (xSemaphoreTake(s_color_result_sem, timeout_ticks) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (out_text && out_text_max > 0) {
+        strlcpy(out_text, s_color_result_text, out_text_max);
+    }
+    return ESP_OK;
+}
+
 static void link_receive_loop(int fd)
 {
     for (;;) {
@@ -238,6 +273,21 @@ static void link_receive_loop(int fd)
             ESP_LOGI(TAG, "resultado OCR recibido: \"%s\"", text);
             strlcpy(s_ocr_result_text, text, sizeof(s_ocr_result_text));
             xSemaphoreGive(s_ocr_result_sem);
+            break;
+        }
+        case LINK_MSG_COLOR_RESULT: {
+            uint32_t to_read = hdr.size < (LINK_COLOR_TEXT_MAX - 1) ? hdr.size : (LINK_COLOR_TEXT_MAX - 1);
+            char text[LINK_COLOR_TEXT_MAX] = {0};
+            if (to_read > 0 && recv_all(fd, text, to_read) != ESP_OK) {
+                return;
+            }
+            if (hdr.size > to_read) {
+                drain_bytes(fd, hdr.size - to_read);
+            }
+            text[to_read] = '\0';
+            ESP_LOGI(TAG, "resultado de color recibido: \"%s\"", text);
+            strlcpy(s_color_result_text, text, sizeof(s_color_result_text));
+            xSemaphoreGive(s_color_result_sem);
             break;
         }
         default:
@@ -333,13 +383,14 @@ esp_err_t link_init(link_command_cb_t cb)
     s_command_cb = cb;
     s_mutex = xSemaphoreCreateMutex();
     s_ocr_result_sem = xSemaphoreCreateBinary();
+    s_color_result_sem = xSemaphoreCreateBinary();
     s_audio_queue = xQueueCreate(8, LINK_AUDIO_CHUNK_SAMPLES * sizeof(int16_t));
     // Profundidad 6 (~600 ms a 16 kHz) — suficiente para absorber que el
     // celular manda los chunks de una locucion entera de un saque (ya
     // sintetizada) más rápido de lo que tarda en reproducirse. Si se llena,
     // xQueueSend bloquea en vez de descartar (ver LINK_MSG_TTS_AUDIO).
     s_tts_audio_queue = xQueueCreate(6, sizeof(tts_audio_chunk_t));
-    if (!s_mutex || !s_ocr_result_sem || !s_audio_queue || !s_tts_audio_queue) {
+    if (!s_mutex || !s_ocr_result_sem || !s_color_result_sem || !s_audio_queue || !s_tts_audio_queue) {
         ESP_LOGE(TAG, "no se pudieron crear los primitivos de sincronizacion");
         return ESP_ERR_NO_MEM;
     }

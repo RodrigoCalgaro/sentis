@@ -61,6 +61,13 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="parar (manual, 7)" />
+
+        <Button
+            android:id="@+id/detectColorButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="detectar color (manual, 8)" />
     </LinearLayout>
 
     <LinearLayout
@@ -106,7 +113,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="Último frame OCR:" />
+        android:text="Último frame recibido (OCR o color):" />
 
     <ImageView
         android:id="@+id/ocrPreviewImage"
@@ -115,7 +122,7 @@
         android:layout_marginTop="4dp"
         android:background="#DDDDDD"
         android:scaleType="fitCenter"
-        android:contentDescription="Último frame capturado para OCR" />
+        android:contentDescription="Último frame capturado para OCR o detección de color" />
 
     <ScrollView
         android:layout_width="match_parent"

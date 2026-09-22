@@ -68,6 +68,9 @@ static void on_link_command(const link_command_t *cmd)
         case 7:  // "stop reading"
             ocr_reading_stop();
             break;
+        case 8:  // "detectar color"
+            ocr_detect_color();
+            break;
         default:
             break;
     }

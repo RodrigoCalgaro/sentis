@@ -37,7 +37,25 @@ static const char *TAG = "ocr";
 #define OCR_JPEG_OUT_SIZE   (512 * 1024)
 #define OCR_REQUEST_TIMEOUT_MS  8000
 
+// Tipo de trabajo despachado a ocr_task al dar s_start_sem — un solo
+// task/buffer set sirve tanto al loop continuo de lectura como al pedido
+// puntual de detección de color, así que ambos quedan mutuamente excluidos
+// por construcción (un solo consumidor) sin necesidad de un mutex aparte.
+//
+// s_pending_job (no una cola FreeRTOS) a propósito: jpeg_new_encoder_engine()
+// más abajo en ocr_init() ya pide memoria de una región chica de SRAM interna
+// DMA-capable (no PSRAM) que vision_init() deja fragmentada — confirmado en
+// hardware real 2026-09-22, "no memory for jpeg encoder rxlink" con PSRAM de
+// sobra. Reusar el semáforo binario que ya existía (en vez de sumar un
+// xQueueCreate() más en ese mismo punto del boot) mantiene el mismo
+// presupuesto de esa región que antes de agregar la detección de color.
+typedef enum {
+    OCR_JOB_READ = 0,
+    OCR_JOB_COLOR,
+} ocr_job_t;
+
 static SemaphoreHandle_t s_start_sem = nullptr;
+static volatile ocr_job_t s_pending_job = OCR_JOB_READ;
 static volatile bool s_stop_req = false;
 static volatile bool s_reading = false;
 static bool s_initialized = false;
@@ -73,13 +91,17 @@ static void mirror_rgb565_inplace(uint8_t *buf, int w, int h)
 
 // -----------------------------------------------------------------------------
 // ocr_task — tarea de vida larga (creada una sola vez en ocr_init). Queda
-// bloqueada en s_start_sem hasta que ocr_reading_start() la despierta; al
-// terminar un ciclo de lectura vuelve a esperar, nunca se destruye.
+// bloqueada en s_job_queue hasta que ocr_reading_start() u ocr_detect_color()
+// la despiertan con un trabajo; al terminarlo vuelve a esperar, nunca se
+// destruye. Un solo consumidor de la cola → un solo trabajo a la vez, así que
+// lectura continua y detección de color nunca pisan los mismos buffers
+// (s_raw/s_jpeg_out/s_enc) entre sí.
 //
 // "stop reading" (s_stop_req) se revisa entre cada etapa del pipeline —
 // desde que la locución se mudó al celular (Fase 3), no queda ninguna etapa
 // bloqueante larga de este lado; el peor caso es esperar un
-// link_request_ocr_text() en curso (hasta OCR_REQUEST_TIMEOUT_MS).
+// link_request_ocr_text()/link_request_color() en curso (hasta
+// OCR_REQUEST_TIMEOUT_MS).
 // -----------------------------------------------------------------------------
 static void ocr_task(void *arg)
 {
@@ -98,58 +120,103 @@ static void ocr_task(void *arg)
 
     while (true) {
         xSemaphoreTake(s_start_sem, portMAX_DELAY);
+        ocr_job_t job = s_pending_job;
         s_reading = true;
         s_stop_req = false;
-        // Pausar la heurística de posición de vision_task durante la lectura:
-        // su resultado no se usa (proximity_task ignora vision mientras hay
-        // lectura OCR activa) y libera CPU para el resto del pipeline — ver
-        // vision_set_analysis_paused() en vision.h.
+        // Pausar la heurística de posición de vision_task durante la captura:
+        // su resultado no se usa (proximity_task ignora vision mientras
+        // ocr_is_reading() es true) y libera CPU para el resto del pipeline —
+        // ver vision_set_analysis_paused() en vision.h. Vale tanto para la
+        // lectura continua como para un pedido puntual de color: mientras
+        // dura, no aporta nada seguir calculando el lado del obstáculo.
         vision_set_analysis_paused(true);
-        ESP_LOGI(TAG, "lectura iniciada");
 
-        while (!s_stop_req) {
-            if (!vision_copy_display_frame(s_raw, VISION_FRAME_SZ)) {
-                vTaskDelay(pdMS_TO_TICKS(200));
-                continue;
+        if (job == OCR_JOB_READ) {
+            ESP_LOGI(TAG, "lectura iniciada");
+
+            while (!s_stop_req) {
+                if (!vision_copy_display_frame(s_raw, VISION_FRAME_SZ)) {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    continue;
+                }
+                mirror_rgb565_inplace(s_raw, VISION_FRAME_W, VISION_FRAME_H);
+                if (s_stop_req) break;
+
+                uint32_t jpeg_size = 0;
+                esp_err_t enc_ret = jpeg_encoder_process(s_enc, &enc_cfg,
+                                                           s_raw, VISION_FRAME_SZ,
+                                                           s_jpeg_out, OCR_JPEG_OUT_SIZE,
+                                                           &jpeg_size);
+                if (enc_ret != ESP_OK || jpeg_size == 0) {
+                    ESP_LOGW(TAG, "jpeg encode: %s (out=%" PRIu32 ")",
+                             esp_err_to_name(enc_ret), jpeg_size);
+                    vTaskDelay(pdMS_TO_TICKS(400));
+                    continue;
+                }
+                if (s_stop_req) break;
+
+                char text[LINK_OCR_TEXT_MAX];
+                esp_err_t ret = link_request_ocr_text(s_jpeg_out, jpeg_size, text, sizeof(text),
+                                                       pdMS_TO_TICKS(OCR_REQUEST_TIMEOUT_MS));
+                if (ret == ESP_OK) {
+                    // La app ya lo locutó con el TTS de Android (Fase 3) — acá
+                    // solo se loguea para diagnóstico (idf.py monitor).
+                    ESP_LOGI(TAG, "app respondio: \"%s\"", text);
+                } else if (ret == ESP_ERR_NOT_FOUND) {
+                    ESP_LOGW(TAG, "sin celular conectado — pausando capturas");
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                    continue;
+                } else if (ret == ESP_ERR_TIMEOUT) {
+                    ESP_LOGW(TAG, "la app no respondio a tiempo (%d ms)", OCR_REQUEST_TIMEOUT_MS);
+                } else {
+                    ESP_LOGW(TAG, "link_request_ocr_text: %s", esp_err_to_name(ret));
+                }
+
+                vTaskDelay(pdMS_TO_TICKS(400)); // cooldown entre ciclos de captura
             }
-            mirror_rgb565_inplace(s_raw, VISION_FRAME_W, VISION_FRAME_H);
-            if (s_stop_req) break;
 
-            uint32_t jpeg_size = 0;
-            esp_err_t enc_ret = jpeg_encoder_process(s_enc, &enc_cfg,
-                                                       s_raw, VISION_FRAME_SZ,
-                                                       s_jpeg_out, OCR_JPEG_OUT_SIZE,
-                                                       &jpeg_size);
-            if (enc_ret != ESP_OK || jpeg_size == 0) {
-                ESP_LOGW(TAG, "jpeg encode: %s (out=%" PRIu32 ")",
-                         esp_err_to_name(enc_ret), jpeg_size);
-                vTaskDelay(pdMS_TO_TICKS(400));
-                continue;
-            }
-            if (s_stop_req) break;
+            ESP_LOGI(TAG, "lectura detenida");
+        } else {  // OCR_JOB_COLOR — un solo ciclo, no loop
+            ESP_LOGI(TAG, "deteccion de color iniciada");
 
-            char text[LINK_OCR_TEXT_MAX];
-            esp_err_t ret = link_request_ocr_text(s_jpeg_out, jpeg_size, text, sizeof(text),
-                                                   pdMS_TO_TICKS(OCR_REQUEST_TIMEOUT_MS));
-            if (ret == ESP_OK) {
-                // La app ya lo locutó con el TTS de Android (Fase 3) — acá
-                // solo se loguea para diagnóstico (idf.py monitor).
-                ESP_LOGI(TAG, "app respondio: \"%s\"", text);
-            } else if (ret == ESP_ERR_NOT_FOUND) {
-                ESP_LOGW(TAG, "sin celular conectado — pausando capturas");
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                continue;
-            } else if (ret == ESP_ERR_TIMEOUT) {
-                ESP_LOGW(TAG, "la app no respondio a tiempo (%d ms)", OCR_REQUEST_TIMEOUT_MS);
-            } else {
-                ESP_LOGW(TAG, "link_request_ocr_text: %s", esp_err_to_name(ret));
-            }
+            do {
+                if (!vision_copy_display_frame(s_raw, VISION_FRAME_SZ)) {
+                    ESP_LOGW(TAG, "sin frame disponible para deteccion de color");
+                    break;
+                }
+                mirror_rgb565_inplace(s_raw, VISION_FRAME_W, VISION_FRAME_H);
 
-            vTaskDelay(pdMS_TO_TICKS(400)); // cooldown entre ciclos de captura
+                uint32_t jpeg_size = 0;
+                esp_err_t enc_ret = jpeg_encoder_process(s_enc, &enc_cfg,
+                                                           s_raw, VISION_FRAME_SZ,
+                                                           s_jpeg_out, OCR_JPEG_OUT_SIZE,
+                                                           &jpeg_size);
+                if (enc_ret != ESP_OK || jpeg_size == 0) {
+                    ESP_LOGW(TAG, "jpeg encode (color): %s (out=%" PRIu32 ")",
+                             esp_err_to_name(enc_ret), jpeg_size);
+                    break;
+                }
+
+                char text[LINK_COLOR_TEXT_MAX];
+                esp_err_t ret = link_request_color(s_jpeg_out, jpeg_size, text, sizeof(text),
+                                                    pdMS_TO_TICKS(OCR_REQUEST_TIMEOUT_MS));
+                if (ret == ESP_OK) {
+                    // La app ya lo locutó con el TTS de Android — acá solo se
+                    // loguea para diagnóstico (idf.py monitor).
+                    ESP_LOGI(TAG, "app respondio color: \"%s\"", text);
+                } else if (ret == ESP_ERR_NOT_FOUND) {
+                    ESP_LOGW(TAG, "sin celular conectado — deteccion de color cancelada");
+                } else if (ret == ESP_ERR_TIMEOUT) {
+                    ESP_LOGW(TAG, "la app no respondio a tiempo (%d ms)", OCR_REQUEST_TIMEOUT_MS);
+                } else {
+                    ESP_LOGW(TAG, "link_request_color: %s", esp_err_to_name(ret));
+                }
+            } while (0);
+
+            ESP_LOGI(TAG, "deteccion de color terminada");
         }
 
         vision_set_analysis_paused(false);
-        ESP_LOGI(TAG, "lectura detenida");
         s_reading = false;
     }
 }
@@ -195,7 +262,7 @@ esp_err_t ocr_init(void)
     // (mic_task/lidar_task). Ver nota de pinning en components/mic/mic.c.
     BaseType_t ok = xTaskCreatePinnedToCore(ocr_task, "ocr_reading", 8192, NULL, 3, NULL, 1);
     if (ok != pdPASS) {
-        ESP_LOGE(TAG, "no hay memoria para la tarea de lectura");
+        ESP_LOGE(TAG, "no hay memoria para la tarea de captura");
         jpeg_del_encoder_engine(s_enc);
         s_enc = nullptr;
         heap_caps_free(s_raw);
@@ -208,13 +275,14 @@ esp_err_t ocr_init(void)
     }
 
     s_initialized = true;
-    ESP_LOGI(TAG, "listo — captura+JPEG+link, esperando \"start reading\"");
+    ESP_LOGI(TAG, "listo — captura+JPEG+link, esperando \"start reading\"/\"detectar color\"");
     return ESP_OK;
 }
 
 void ocr_reading_start(void)
 {
     if (!s_initialized || s_reading) return;
+    s_pending_job = OCR_JOB_READ;
     xSemaphoreGive(s_start_sem);
 }
 
@@ -226,4 +294,15 @@ void ocr_reading_stop(void)
 bool ocr_is_reading(void)
 {
     return s_reading;
+}
+
+void ocr_detect_color(void)
+{
+    if (!s_initialized) return;
+    if (s_reading) {
+        ESP_LOGW(TAG, "deteccion de color ignorada — ya hay una captura en curso");
+        return;
+    }
+    s_pending_job = OCR_JOB_COLOR;
+    xSemaphoreGive(s_start_sem);
 }

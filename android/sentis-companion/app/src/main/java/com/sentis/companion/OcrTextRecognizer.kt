@@ -1,8 +1,6 @@
 package com.sentis.companion
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -33,26 +31,11 @@ class OcrTextRecognizer(
     // "Hola": encuadre/enfoque, no un bug del pipeline).
     fun recognize(jpeg: ByteArray, onFrame: (Bitmap) -> Unit, onResult: (String) -> Unit) {
         executor.execute {
-            val raw = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-            if (raw == null) {
+            val bitmap = decodeSentisFrame(jpeg)
+            if (bitmap == null) {
                 onLog("OCR: no se pudo decodificar el JPEG (${jpeg.size} bytes)")
                 return@execute
             }
-            // El firmware manda el frame girado 90° y espejado respecto a la
-            // vista del usuario — mirror_rgb565_inplace en components/ocr/
-            // ocr.cpp solo corrige el artefacto de binning del sensor (un
-            // espejado vertical), no el montaje físico de la cámara. Rotación
-            // + espejo confirmados contra una foto real (portada de libro,
-            // texto legible y ML Kit exacto) en hardware real 2026-09-21 con
-            // la preview de este mismo archivo.
-            val bitmap = Bitmap.createBitmap(
-                raw, 0, 0, raw.width, raw.height,
-                Matrix().apply {
-                    postRotate(90f)
-                    postScale(-1f, 1f)
-                },
-                true,
-            )
             onFrame(bitmap)
             val image = InputImage.fromBitmap(bitmap, 0)
             recognizer.process(image)

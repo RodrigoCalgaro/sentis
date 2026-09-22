@@ -23,6 +23,7 @@ import java.util.concurrent.Executors
 
 const val COMMAND_START_READING = 6
 const val COMMAND_STOP_READING = 7
+const val COMMAND_DETECT_COLOR = 8
 
 // Registro voseo rioplatense, varias formas de decir cada comando para
 // tolerar cómo lo pronuncie cada usuario — Vosk devuelve texto libre, no
@@ -32,6 +33,11 @@ private val START_READING_PHRASES = listOf(
 )
 private val STOP_READING_PHRASES = listOf(
     "parar", "para", "dejá de leer", "deja de leer", "parar de leer", "basta",
+)
+private val DETECT_COLOR_PHRASES = listOf(
+    "detectar color", "detecta color", "que color es", "qué color es",
+    "de que color es esto", "de qué color es esto", "decime el color",
+    "decime que color es",
 )
 
 private const val MODEL_ASSET_DIR = "model-es-small"
@@ -116,6 +122,8 @@ class VoiceCommandRecognizer(
                 onCommandDetected(COMMAND_START_READING, text)
             STOP_READING_PHRASES.any { text == it } ->
                 onCommandDetected(COMMAND_STOP_READING, text)
+            DETECT_COLOR_PHRASES.any { text == it } ->
+                onCommandDetected(COMMAND_DETECT_COLOR, text)
         }
     }
 

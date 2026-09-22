@@ -30,12 +30,15 @@ const val MSG_OCR_REQUEST = 2
 const val MSG_OCR_RESULT = 3
 const val MSG_COMMAND = 4
 const val MSG_TTS_AUDIO = 5
+const val MSG_COLOR_REQUEST = 6
+const val MSG_COLOR_RESULT = 7
 
 class LinkClient(
     private val onLog: (String) -> Unit,
     private val onStatus: (String) -> Unit,
     private val onAudioChunk: (ByteArray) -> Unit,
     private val onOcrRequest: (ByteArray) -> Unit,
+    private val onColorRequest: (ByteArray) -> Unit,
 ) {
     @Volatile private var socket: Socket? = null
     @Volatile private var out: DataOutputStream? = null
@@ -124,6 +127,7 @@ class LinkClient(
             when (type) {
                 MSG_AUDIO -> onAudioChunk(payload)
                 MSG_OCR_REQUEST -> onOcrRequest(payload)
+                MSG_COLOR_REQUEST -> onColorRequest(payload)
                 else -> onLog("Tipo de mensaje inesperado del ESP32: $type (${payload.size} bytes)")
             }
         }
@@ -192,6 +196,13 @@ class LinkClient(
         if (text.isNotBlank()) {
             onLog("-> OCR_RESULT texto=\"$text\"")
         }
+    }
+
+    // Nombre del color dominante calculado por ColorDetector, para el último
+    // MSG_COLOR_REQUEST pendiente (mismo shape que sendOcrResult).
+    fun sendColorResult(text: String) {
+        sendFramed(MSG_COLOR_RESULT, text.toByteArray(Charsets.UTF_8))
+        onLog("-> COLOR_RESULT texto=\"$text\"")
     }
 
     // Un chunk de PCM mono 16-bit del TTS de Android (ver TtsSpeaker), para
