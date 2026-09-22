@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.SeekBar
 import android.widget.TextView
 
 // SoftAP fijo de components/wifi (ver sdkconfig: CONFIG_WIFI_SSID/PASSWORD).
@@ -47,6 +48,12 @@ class MainActivity : Activity() {
     private lateinit var hostInput: EditText
     private lateinit var portInput: EditText
     private lateinit var ocrTextInput: EditText
+    private lateinit var volumeSeekBar: SeekBar
+    private lateinit var warnSeekBar: SeekBar
+    private lateinit var alertSeekBar: SeekBar
+    private lateinit var volumeValueText: TextView
+    private lateinit var warnValueText: TextView
+    private lateinit var alertValueText: TextView
 
     private var audioChunks = 0
     private var audioBytes = 0
@@ -79,6 +86,12 @@ class MainActivity : Activity() {
         hostInput = findViewById(R.id.hostInput)
         portInput = findViewById(R.id.portInput)
         ocrTextInput = findViewById(R.id.ocrTextInput)
+        volumeSeekBar = findViewById(R.id.volumeSeekBar)
+        warnSeekBar = findViewById(R.id.warnSeekBar)
+        alertSeekBar = findViewById(R.id.alertSeekBar)
+        volumeValueText = findViewById(R.id.volumeValueText)
+        warnValueText = findViewById(R.id.warnValueText)
+        alertValueText = findViewById(R.id.alertValueText)
 
         ocrRecognizer = OcrTextRecognizer(
             onLog = { msg -> runOnUiThread { appendLog(msg) } },
@@ -142,7 +155,26 @@ class MainActivity : Activity() {
                     },
                 )
             },
+            onSettingsState = { volumePct, warnMm, alertMm ->
+                runOnUiThread {
+                    volumeSeekBar.progress = volumePct
+                    volumeValueText.text = "Volumen: $volumePct%"
+                    warnSeekBar.progress = warnMm
+                    warnValueText.text = "Umbral precaución: $warnMm mm"
+                    alertSeekBar.progress = alertMm
+                    alertValueText.text = "Umbral alerta: $alertMm mm"
+                }
+            },
         )
+
+        // Sliders de ajustes — mandan SETTINGS_SET recien al soltar (no en
+        // cada pixel de arrastre), para no saturar el socket. El firmware
+        // responde con MSG_SETTINGS_STATE (ver onSettingsState arriba), que
+        // deja el slider en el valor real aplicado si el pedido fue
+        // clampeado o rechazado (ver components/settings/settings.c).
+        setupSettingSeekBar(volumeSeekBar, volumeValueText, SETTING_VOLUME) { "Volumen: $it%" }
+        setupSettingSeekBar(warnSeekBar, warnValueText, SETTING_PROXIMITY_WARN_MM) { "Umbral precaución: $it mm" }
+        setupSettingSeekBar(alertSeekBar, alertValueText, SETTING_PROXIMITY_ALERT_MM) { "Umbral alerta: $it mm" }
 
         voiceRecognizer = VoiceCommandRecognizer(
             context = this,
@@ -197,6 +229,26 @@ class MainActivity : Activity() {
 
     private fun appendLog(msg: String) {
         logText.append("$msg\n")
+    }
+
+    // Actualiza el label en vivo mientras se arrastra, y manda el SETTINGS_SET
+    // solo al soltar (onStopTrackingTouch) — igual criterio que sendCommand:
+    // evitar floodear el socket con un mensaje por cada pixel de movimiento.
+    private fun setupSettingSeekBar(
+        seekBar: SeekBar,
+        valueText: TextView,
+        paramId: Int,
+        label: (Int) -> String,
+    ) {
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                valueText.text = label(progress)
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar) {
+                client?.sendSettingsSet(paramId, seekBar.progress)
+            }
+        })
     }
 
     // "leer" arranca una lectura nueva — resetea el dedup para no silenciar

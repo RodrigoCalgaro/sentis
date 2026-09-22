@@ -42,6 +42,57 @@
             android:text="Conectar" />
     </LinearLayout>
 
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Ajustes"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/volumeValueText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Volumen: 70%" />
+
+    <SeekBar
+        android:id="@+id/volumeSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:min="0"
+        android:max="100"
+        android:progress="70" />
+
+    <TextView
+        android:id="@+id/warnValueText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="Umbral precaución: 1500 mm" />
+
+    <SeekBar
+        android:id="@+id/warnSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:min="300"
+        android:max="4000"
+        android:progress="1500" />
+
+    <TextView
+        android:id="@+id/alertValueText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="Umbral alerta: 500 mm" />
+
+    <SeekBar
+        android:id="@+id/alertSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:min="100"
+        android:max="2000"
+        android:progress="500" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

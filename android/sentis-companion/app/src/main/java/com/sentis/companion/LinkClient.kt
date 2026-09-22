@@ -32,6 +32,14 @@ const val MSG_COMMAND = 4
 const val MSG_TTS_AUDIO = 5
 const val MSG_COLOR_REQUEST = 6
 const val MSG_COLOR_RESULT = 7
+const val MSG_SETTINGS_SET = 8
+const val MSG_SETTINGS_STATE = 9
+
+// IDs de parametro para MSG_SETTINGS_SET/STATE — deben coincidir con
+// link_setting_id_t en components/link/link.h.
+const val SETTING_VOLUME = 1
+const val SETTING_PROXIMITY_WARN_MM = 2
+const val SETTING_PROXIMITY_ALERT_MM = 3
 
 class LinkClient(
     private val onLog: (String) -> Unit,
@@ -39,6 +47,10 @@ class LinkClient(
     private val onAudioChunk: (ByteArray) -> Unit,
     private val onOcrRequest: (ByteArray) -> Unit,
     private val onColorRequest: (ByteArray) -> Unit,
+    // Estado actual de volumen/umbrales de proximidad — llega al conectar y
+    // despues de cada sendSettingsSet() (ver MSG_SETTINGS_STATE), con el
+    // valor ya clampeado/validado por el firmware (puede no ser el pedido).
+    private val onSettingsState: (volumePct: Int, warnMm: Int, alertMm: Int) -> Unit = { _, _, _ -> },
 ) {
     @Volatile private var socket: Socket? = null
     @Volatile private var out: DataOutputStream? = null
@@ -128,6 +140,17 @@ class LinkClient(
                 MSG_AUDIO -> onAudioChunk(payload)
                 MSG_OCR_REQUEST -> onOcrRequest(payload)
                 MSG_COLOR_REQUEST -> onColorRequest(payload)
+                MSG_SETTINGS_STATE -> {
+                    if (payload.size >= 12) {
+                        val p = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+                        val volumePct = p.int
+                        val warnMm = p.int
+                        val alertMm = p.int
+                        onSettingsState(volumePct, warnMm, alertMm)
+                    } else {
+                        onLog("MSG_SETTINGS_STATE con payload corto (${payload.size} bytes)")
+                    }
+                }
                 else -> onLog("Tipo de mensaje inesperado del ESP32: $type (${payload.size} bytes)")
             }
         }
@@ -203,6 +226,18 @@ class LinkClient(
     fun sendColorResult(text: String) {
         sendFramed(MSG_COLOR_RESULT, text.toByteArray(Charsets.UTF_8))
         onLog("-> COLOR_RESULT texto=\"$text\"")
+    }
+
+    // Pide cambiar un parametro ajustable (volumen o umbral de proximidad).
+    // El firmware responde siempre con un MSG_SETTINGS_STATE (ver
+    // components/link/link.c) reflejando el valor real que quedó aplicado —
+    // puede diferir de value si el firmware lo clampeó o lo rechazó.
+    fun sendSettingsSet(paramId: Int, value: Int) {
+        val buf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(paramId)
+        buf.putInt(value)
+        sendFramed(MSG_SETTINGS_SET, buf.array())
+        onLog("-> SETTINGS_SET param_id=$paramId value=$value")
     }
 
     // Un chunk de PCM mono 16-bit del TTS de Android (ver TtsSpeaker), para

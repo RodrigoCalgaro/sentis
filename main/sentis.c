@@ -13,27 +13,17 @@
 #include "mic.h"
 #include "tts.h"
 #include "ocr.h"
+#include "settings.h"
 
-// =============================================================================
-// Umbrales de proximidad — ajustar estos dos valores para calibrar las distancias
-// a las que el usuario recibe retroalimentación háptica.
-//
-//   PROXIMITY_WARN_MM   Distancia a partir de la cual comienza la vibración suave
-//                       (motor izquierdo, derecho o ambos según posición del
-//                       obstáculo detectada por la cámara). Indica que hay un
-//                       obstáculo en la zona de precaución.
-//                       Valor por defecto: 1500 mm (1,5 m)
-//
-//   PROXIMITY_ALERT_MM  Distancia a partir de la cual se activa la vibración
-//                       continua a máxima intensidad en ambos motores. En esta
-//                       zona el obstáculo es inminente y la prioridad es la
-//                       seguridad: se ignora la posición lateral y se activan
-//                       ambos motores para la reacción más rápida posible.
-//                       Valor por defecto: 500 mm (50 cm)
-//                       Debe ser menor que PROXIMITY_WARN_MM.
-// =============================================================================
-#define PROXIMITY_WARN_MM   1500
-#define PROXIMITY_ALERT_MM   500
+// -----------------------------------------------------------------------------
+// Umbrales de proximidad (distancia a partir de la cual empieza la vibración
+// suave / la alerta a máxima intensidad) y volumen del parlante: ya no son
+// constantes fijas, son ajustables en runtime desde la app Android companion
+// y persisten en NVS entre reinicios — ver components/settings. proximity_task
+// los lee en cada iteración con settings_get_proximity_warn_mm()/alert_mm();
+// los defaults (1500 mm / 500 mm / 70%) y el invariante alert_mm < warn_mm
+// están documentados en settings.h.
+// -----------------------------------------------------------------------------
 
 // Intervalo entre evaluaciones de proximidad en milisegundos.
 // 50 ms → 20 evaluaciones por segundo, suficiente para obstáculos semi-dinámicos.
@@ -74,6 +64,42 @@ static void on_link_command(const link_command_t *cmd)
         default:
             break;
     }
+}
+
+// -----------------------------------------------------------------------------
+// on_link_settings_set / on_link_settings_get — callbacks pasadas a link_init()
+// para LINK_MSG_SETTINGS_SET/STATE (ver components/link/link.h). Solo hacen de
+// puente hacia components/settings, que es quien valida, clampea, persiste en
+// NVS y aplica el cambio (audio_set_volume + tono de prueba para el volumen).
+// Se llaman desde la tarea de recepción de link — no bloquear aquí (los
+// setters de settings son rápidos: memoria + NVS, sin I/O de red).
+// -----------------------------------------------------------------------------
+static void on_link_settings_set(link_setting_id_t param_id, int32_t value)
+{
+    switch (param_id) {
+        case LINK_SETTING_VOLUME:
+            settings_set_volume_percent((int)value);
+            break;
+        case LINK_SETTING_PROXIMITY_WARN_MM:
+            settings_set_proximity_warn_mm((int)value);
+            break;
+        case LINK_SETTING_PROXIMITY_ALERT_MM:
+            settings_set_proximity_alert_mm((int)value);
+            break;
+        default:
+            ESP_LOGW("link", "settings SET: param_id desconocido (%d)", (int)param_id);
+            break;
+    }
+}
+
+static link_settings_state_t on_link_settings_get(void)
+{
+    link_settings_state_t state = {
+        .volume_pct = settings_get_volume_percent(),
+        .proximity_warn_mm = settings_get_proximity_warn_mm(),
+        .proximity_alert_mm = settings_get_proximity_alert_mm(),
+    };
+    return state;
 }
 
 // -----------------------------------------------------------------------------
@@ -121,12 +147,14 @@ static void proximity_task(void *arg)
         }
 
         uint16_t dist = lidar_get_distance_mm();
+        uint16_t warn_mm = settings_get_proximity_warn_mm();
+        uint16_t alert_mm = settings_get_proximity_alert_mm();
 
-        if (dist == 0 || dist > PROXIMITY_WARN_MM) {
+        if (dist == 0 || dist > warn_mm) {
             // Sin datos todavía, o el obstáculo está fuera del rango de interés.
             pattern = HAPTIC_PATTERN_OFF;
 
-        } else if (dist > PROXIMITY_ALERT_MM) {
+        } else if (dist > alert_mm) {
             // Zona de precaución: el obstáculo se acerca pero hay margen.
             // Usar la posición lateral de la cámara para activar solo el motor
             // del lado correspondiente.
@@ -176,17 +204,20 @@ static void proximity_task(void *arg)
 //    2. lidar_init    — UART1, sin dependencias externas
 //    3. wifi_init     — C6 (esp_hosted/SDIO) + SoftAP para la app companion
 //    4. cp_ota_check_and_update — actualiza el firmware del C6 si hace falta
-//    5. link_init     — servidor TCP hacia la app companion (Fase 2)
-//    6. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
+//    5. settings_init — carga volumen/umbrales de proximidad desde NVS
+//    6. link_init     — servidor TCP hacia la app companion (Fase 2)
+//    7. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
 //                       Abre TX (playback) y RX (micrófono) en el mismo I2S0.
-//    7. tts_init      — monta partición de flash "voice_data" y carga voz
+//                       Aplica el volumen cargado por settings_init().
+//    8. tts_init      — monta partición de flash "voice_data" y carga voz
 //                       eSpeak-NG (Fase 6A / Fase 2). Reproduce "Sentis
 //                       Encendido" como confirmación de arranque.
-//    8. mic_init      — tarea de captura: ES8311 ADC → chunks mono → link_send_audio()
-//    9. vision_init   — I2C + MIPI CSI-2 (Fase 5)
-//   10. ocr_init      — captura+JPEG, pedido de lectura vía app companion (Fase 2)
-//   11. monitor_init  — transmisión de frames para desarrollo (Fase 5)
-//   12. proximity_task — fusiona LiDAR + visión + háptica
+//    9. mic_init      — tarea de captura: ES8311 ADC → chunks mono → link_send_audio()
+//   10. vision_init   — I2C + MIPI CSI-2 (Fase 5)
+//   11. ocr_init      — captura+JPEG, pedido de lectura vía app companion (Fase 2)
+//   12. monitor_init  — transmisión de frames para desarrollo (Fase 5)
+//   13. proximity_task — fusiona LiDAR + visión + háptica, usando los umbrales
+//                       de settings_init() (ajustables en runtime vía app)
 //
 // Fase 2 (ver sentis-stability-integration-plan.md): el reconocimiento de voz
 // (antes ESP-SR/MultiNet7, inglés-only) y el OCR (antes pp_ocr_v6, crasheaba
@@ -232,17 +263,27 @@ void app_main(void)
         cp_ota_check_and_update();
     }
 
+    // ---- Ajustes persistidos (volumen, umbrales de proximidad) ----
+    // settings_init() abre NVS y carga los tres valores (o los defaults si es
+    // el primer boot). wifi_init() ya corrió nvs_flash_init() más arriba,
+    // sea cual sea su resultado (ver components/wifi/wifi.c: init_nvs() es lo
+    // primero que hace) — no fatal si NVS no está disponible, se sigue con
+    // los defaults en memoria sin persistencia.
+    settings_init();
+
     // ---- Fase 2: protocolo hacia la app companion ----
     // link_init() levanta el servidor TCP (puerto components/link/link.h,
     // LINK_TCP_PORT) sobre el SoftAP. on_link_command() reemplaza al viejo
     // on_stt_result — los comandos de voz ahora se reconocen del lado del
-    // celular (Vosk), nunca on-device. No fatal si falla.
+    // celular (Vosk), nunca on-device. on_link_settings_set/get exponen
+    // volumen y umbrales de proximidad ajustables desde la app (ver
+    // components/settings). No fatal si falla.
     //
     // El bug histórico "la cámara nunca entrega frames con el C6 activo" ya
     // se resolvió (ver sentis-stability-integration-plan.md, Fase 1 — el CP
     // corría en modo SW_AGGR, ahora en STREAM) — ya no hace falta mantener
     // esto deshabilitado para aislar esa causa.
-    link_init(on_link_command);
+    link_init(on_link_command, on_link_settings_set, on_link_settings_get);
 
     // ---- Fase 2: audio ----
     // La SD ya no se monta acá: el sonido de alerta de arranque (alert.wav)
@@ -253,6 +294,12 @@ void app_main(void)
     // components/storage/ para si hace falta SD a futuro (ver el conflicto
     // conocido SDMMC-vs-esp_hosted documentado ahí).
     audio_init();     // ES8311 + I2S0 full-duplex (TX playback + RX mic)
+
+    // Aplicar el volumen persistido (o el default) recién ahora — antes de
+    // esto audio_set_volume() no tiene codec inicializado para escribirle.
+    // Silencioso a propósito (sin tono de prueba): eso queda reservado para
+    // cambios en runtime pedidos desde la app (ver settings_set_volume_percent).
+    audio_set_volume(settings_get_volume_percent());
 
     // ---- Fase 6A / Fase 2: TTS en español (eSpeak-NG desde flash) ----
     // tts_init monta la partición "voice_data" (imagen FAT de solo lectura,

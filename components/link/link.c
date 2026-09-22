@@ -1,5 +1,6 @@
 #include "link.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "audio.h"
@@ -32,7 +33,24 @@ typedef enum {
     LINK_MSG_TTS_AUDIO = 5,
     LINK_MSG_COLOR_REQUEST = 6,
     LINK_MSG_COLOR_RESULT = 7,
+    LINK_MSG_SETTINGS_SET = 8,
+    LINK_MSG_SETTINGS_STATE = 9,
 } link_msg_type_t;
+
+// Payload de LINK_MSG_SETTINGS_SET: mismo layout en ambos lados (int32 LE +
+// int32 LE), ver sendSettingsSet() en LinkClient.kt.
+typedef struct __attribute__((packed)) {
+    int32_t param_id;
+    int32_t value;
+} settings_set_payload_t;
+
+// Payload de LINK_MSG_SETTINGS_STATE: mismo layout que link_settings_state_t
+// (ya son todos int32_t, sin padding que dependa del compilador).
+typedef struct __attribute__((packed)) {
+    int32_t volume_pct;
+    int32_t proximity_warn_mm;
+    int32_t proximity_alert_mm;
+} settings_state_payload_t;
 
 // Payload de un chunk de audio TTS recibido del celular. count <=
 // LINK_TTS_AUDIO_MAX_SAMPLES siempre — ver LINK_MSG_TTS_AUDIO en link_receive_loop.
@@ -54,6 +72,8 @@ static SemaphoreHandle_t s_color_result_sem;  // dada por la recepcion cuando ll
 static QueueHandle_t s_audio_queue;
 static QueueHandle_t s_tts_audio_queue;
 static link_command_cb_t s_command_cb;
+static link_settings_set_cb_t s_settings_set_cb;
+static link_settings_get_cb_t s_settings_get_cb;
 static int s_client_fd = -1;
 static char s_ocr_result_text[LINK_OCR_TEXT_MAX];
 static char s_color_result_text[LINK_COLOR_TEXT_MAX];
@@ -209,6 +229,23 @@ esp_err_t link_request_color(const uint8_t *jpeg, size_t jpeg_len,
     return ESP_OK;
 }
 
+// Arma un LINK_MSG_SETTINGS_STATE con s_settings_get_cb() y lo manda. No-op
+// si no hay callback registrado (ver link_init) o no hay cliente conectado
+// (link_send_framed ya maneja eso).
+static void link_send_settings_state(void)
+{
+    if (!s_settings_get_cb) {
+        return;
+    }
+    link_settings_state_t state = s_settings_get_cb();
+    settings_state_payload_t payload = {
+        .volume_pct = state.volume_pct,
+        .proximity_warn_mm = state.proximity_warn_mm,
+        .proximity_alert_mm = state.proximity_alert_mm,
+    };
+    link_send_framed(LINK_MSG_SETTINGS_STATE, &payload, sizeof(payload));
+}
+
 static void link_receive_loop(int fd)
 {
     for (;;) {
@@ -290,6 +327,26 @@ static void link_receive_loop(int fd)
             xSemaphoreGive(s_color_result_sem);
             break;
         }
+        case LINK_MSG_SETTINGS_SET: {
+            settings_set_payload_t set = {0};
+            uint32_t to_read = hdr.size < sizeof(set) ? hdr.size : sizeof(set);
+            if (to_read > 0 && recv_all(fd, &set, to_read) != ESP_OK) {
+                return;
+            }
+            if (hdr.size > to_read) {
+                drain_bytes(fd, hdr.size - to_read);
+            }
+            ESP_LOGI(TAG, "settings SET: param_id=%" PRId32 " value=%" PRId32, set.param_id, set.value);
+            if (s_settings_set_cb) {
+                s_settings_set_cb((link_setting_id_t)set.param_id, set.value);
+            }
+            // Responder siempre con el estado real tras aplicar — puede
+            // diferir de lo pedido si el valor fue clampeado o rechazado
+            // (ver components/settings), y la app necesita saberlo para no
+            // dejar el slider en un valor que el firmware no adoptó.
+            link_send_settings_state();
+            break;
+        }
         default:
             ESP_LOGW(TAG, "tipo de mensaje desconocido (%d, %u bytes), descartando", hdr.type, hdr.size);
             drain_bytes(fd, hdr.size);
@@ -337,6 +394,10 @@ static void link_server_task(void *arg)
         s_client_fd = client_fd;
         xSemaphoreGive(s_mutex);
 
+        // Poblar la UI de la app con el estado real (volumen, umbrales) en
+        // vez de que arranque con un default hardcodeado del lado Android.
+        link_send_settings_state();
+
         link_receive_loop(client_fd);
 
         xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -378,9 +439,13 @@ static void link_tts_playback_task(void *arg)
     }
 }
 
-esp_err_t link_init(link_command_cb_t cb)
+esp_err_t link_init(link_command_cb_t command_cb,
+                     link_settings_set_cb_t settings_set_cb,
+                     link_settings_get_cb_t settings_get_cb)
 {
-    s_command_cb = cb;
+    s_command_cb = command_cb;
+    s_settings_set_cb = settings_set_cb;
+    s_settings_get_cb = settings_get_cb;
     s_mutex = xSemaphoreCreateMutex();
     s_ocr_result_sem = xSemaphoreCreateBinary();
     s_color_result_sem = xSemaphoreCreateBinary();
