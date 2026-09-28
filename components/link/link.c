@@ -74,6 +74,9 @@ static QueueHandle_t s_tts_audio_queue;
 static link_command_cb_t s_command_cb;
 static link_settings_set_cb_t s_settings_set_cb;
 static link_settings_get_cb_t s_settings_get_cb;
+static link_listening_cb_t s_listening_cb;
+static link_connected_cb_t s_connected_cb;
+static link_disconnected_cb_t s_disconnected_cb;
 static int s_client_fd = -1;
 static char s_ocr_result_text[LINK_OCR_TEXT_MAX];
 static char s_color_result_text[LINK_COLOR_TEXT_MAX];
@@ -381,6 +384,9 @@ static void link_server_task(void *arg)
     }
 
     ESP_LOGI(TAG, "escuchando en el puerto %d", LINK_TCP_PORT);
+    if (s_listening_cb) {
+        s_listening_cb();
+    }
 
     for (;;) {
         int client_fd = accept(listen_fd, NULL, NULL);
@@ -394,6 +400,10 @@ static void link_server_task(void *arg)
         s_client_fd = client_fd;
         xSemaphoreGive(s_mutex);
 
+        if (s_connected_cb) {
+            s_connected_cb();
+        }
+
         // Poblar la UI de la app con el estado real (volumen, umbrales) en
         // vez de que arranque con un default hardcodeado del lado Android.
         link_send_settings_state();
@@ -405,6 +415,10 @@ static void link_server_task(void *arg)
         xSemaphoreGive(s_mutex);
         close(client_fd);
         ESP_LOGI(TAG, "celular desconectado");
+
+        if (s_disconnected_cb) {
+            s_disconnected_cb();
+        }
     }
 }
 
@@ -441,11 +455,17 @@ static void link_tts_playback_task(void *arg)
 
 esp_err_t link_init(link_command_cb_t command_cb,
                      link_settings_set_cb_t settings_set_cb,
-                     link_settings_get_cb_t settings_get_cb)
+                     link_settings_get_cb_t settings_get_cb,
+                     link_listening_cb_t listening_cb,
+                     link_connected_cb_t connected_cb,
+                     link_disconnected_cb_t disconnected_cb)
 {
     s_command_cb = command_cb;
     s_settings_set_cb = settings_set_cb;
     s_settings_get_cb = settings_get_cb;
+    s_listening_cb = listening_cb;
+    s_connected_cb = connected_cb;
+    s_disconnected_cb = disconnected_cb;
     s_mutex = xSemaphoreCreateMutex();
     s_ocr_result_sem = xSemaphoreCreateBinary();
     s_color_result_sem = xSemaphoreCreateBinary();

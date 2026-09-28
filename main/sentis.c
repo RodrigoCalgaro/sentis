@@ -103,6 +103,44 @@ static link_settings_state_t on_link_settings_get(void)
 }
 
 // -----------------------------------------------------------------------------
+// on_link_listening / on_link_connected / on_link_disconnected — feedback
+// háptico (no de audio) para los tres momentos de la conexion WiFi con la app
+// companion: el servidor TCP recien arrancado (todavia sin celular), el
+// celular ya vinculado, y el celular desvinculado (cierre desde la app,
+// perdida de señal, o error de socket — link_server_task no distingue el
+// motivo, ver components/link/link.h). Pasadas a link_init() como
+// listening_cb/connected_cb/disconnected_cb en vez de resolverse dentro de
+// link.c para no acoplar ese componente a haptics — mismo criterio que
+// on_link_settings_set/get con components/settings.
+//
+// Se probó primero con TTS ("Esperando conexión."/"Conexión establecida.") y
+// se descartó: en hardware real sonaba atropellado de forma persistente pese
+// a descartar concurrencia con mic/vision/ocr y desborde de stack (ver
+// historial de sentis-stability-integration-plan.md si hace falta el detalle
+// completo) — el patrón háptico de un solo disparo evita el problema por
+// completo, sin tocar el pipeline de audio para nada.
+//
+// on_link_disconnected reusa el mismo patrón que on_link_listening (un pulso
+// simple) a propósito: tras desconectarse, el sistema vuelve exactamente al
+// mismo estado ("esperando a que se vincule un celular") que representa ese
+// patrón — no hace falta uno nuevo.
+// -----------------------------------------------------------------------------
+static void on_link_listening(void)
+{
+    haptic_set_pattern(HAPTIC_PATTERN_NOTIFY_SINGLE);
+}
+
+static void on_link_connected(void)
+{
+    haptic_set_pattern(HAPTIC_PATTERN_NOTIFY_DOUBLE);
+}
+
+static void on_link_disconnected(void)
+{
+    haptic_set_pattern(HAPTIC_PATTERN_NOTIFY_SINGLE);
+}
+
+// -----------------------------------------------------------------------------
 // proximity_task — lee distancia del LiDAR, consulta posición de la cámara y
 // selecciona el patrón háptico mediante la tabla de fusión.
 //
@@ -277,13 +315,17 @@ void app_main(void)
     // on_stt_result — los comandos de voz ahora se reconocen del lado del
     // celular (Vosk), nunca on-device. on_link_settings_set/get exponen
     // volumen y umbrales de proximidad ajustables desde la app (ver
-    // components/settings). No fatal si falla.
+    // components/settings). on_link_listening/on_link_connected/
+    // on_link_disconnected dan feedback háptico (pulso / doble pulso / pulso)
+    // de los tres momentos de la conexión WiFi — requieren haptic_init() ya
+    // corrido, que pasa al principio de app_main. No fatal si falla.
     //
     // El bug histórico "la cámara nunca entrega frames con el C6 activo" ya
     // se resolvió (ver sentis-stability-integration-plan.md, Fase 1 — el CP
     // corría en modo SW_AGGR, ahora en STREAM) — ya no hace falta mantener
     // esto deshabilitado para aislar esa causa.
-    link_init(on_link_command, on_link_settings_set, on_link_settings_get);
+    link_init(on_link_command, on_link_settings_set, on_link_settings_get,
+              on_link_listening, on_link_connected, on_link_disconnected);
 
     // ---- Fase 2: audio ----
     // La SD ya no se monta acá: el sonido de alerta de arranque (alert.wav)

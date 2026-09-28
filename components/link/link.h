@@ -111,15 +111,40 @@ typedef void (*link_settings_set_cb_t)(link_setting_id_t param_id, int32_t value
 // de components/settings.
 typedef link_settings_state_t (*link_settings_get_cb_t)(void);
 
+// Callback invocada una sola vez, apenas el servidor TCP queda escuchando
+// (bind+listen exitosos) — a partir de ese momento la app ya puede conectarse.
+// Puede ser NULL. Se llama desde link_server_task, antes de entrar al loop de
+// accept() — no bloquear mucho aca (mismo criterio que link_command_cb_t; a
+// diferencia de una locucion TTS, un patron haptico corto no tiene problema
+// en correr desde esta tarea, ver on_link_listening en main/sentis.c).
+typedef void (*link_listening_cb_t)(void);
+
+// Callback invocada cada vez que un celular se conecta (accept() exitoso).
+// Puede ser NULL. Se llama desde link_server_task, antes de mandar el
+// LINK_MSG_SETTINGS_STATE inicial — no bloquear aca (mismo criterio que
+// link_command_cb_t).
+typedef void (*link_connected_cb_t)(void);
+
+// Callback invocada cada vez que el celular conectado se desconecta (fin de
+// link_receive_loop, sea porque la app cerro la conexion o por perdida de
+// señal/error de socket). Puede ser NULL. Se llama desde link_server_task,
+// antes de volver al loop de accept() — no bloquear aca (mismo criterio que
+// link_command_cb_t).
+typedef void (*link_disconnected_cb_t)(void);
+
 // Levanta el servidor TCP (tareas de aceptar conexion, recibir mensajes y
 // enviar audio encolado). Requiere wifi_init() ya corrido (el SoftAP debe
 // estar arriba). command_cb puede ser NULL si todavia no hay nada que reciba
 // comandos (se loguea el comando y se descarta). settings_set_cb/settings_get_cb
 // pueden ser NULL si todavia no hay ajustes que exponer (se loguea y se
-// descarta el SET; no se manda STATE).
+// descarta el SET; no se manda STATE). listening_cb/connected_cb/disconnected_cb
+// pueden ser NULL si no hace falta feedback en esos momentos.
 esp_err_t link_init(link_command_cb_t command_cb,
                      link_settings_set_cb_t settings_set_cb,
-                     link_settings_get_cb_t settings_get_cb);
+                     link_settings_get_cb_t settings_get_cb,
+                     link_listening_cb_t listening_cb,
+                     link_connected_cb_t connected_cb,
+                     link_disconnected_cb_t disconnected_cb);
 
 // true si la app esta conectada en este momento.
 bool link_is_client_connected(void);

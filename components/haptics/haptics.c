@@ -32,6 +32,13 @@
 #define PULSE_ON_MS   200
 #define PULSE_OFF_MS  200
 
+// Duración de pulso/pausa para los patrones de notificación de un solo
+// disparo (NOTIFY_SINGLE/NOTIFY_DOUBLE) — más corto que PULSE_ON_MS para que
+// se sienta como un "toque" puntual, distinguible de los patrones de aviso de
+// obstáculo (que son continuos mientras dura la condición).
+#define NOTIFY_PULSE_MS  120
+#define NOTIFY_GAP_MS    120
+
 // Variable global del patrón activo. La lee haptic_task y la escribe
 // haptic_set_pattern (puede llamarse desde otra tarea, de ahí el volatile).
 static volatile haptic_pattern_t s_pattern = HAPTIC_PATTERN_OFF;
@@ -95,6 +102,37 @@ static void haptic_task(void *arg)
                 set_duty(LEDC_CHANNEL_0, DUTY_MAX);
                 set_duty(LEDC_CHANNEL_1, DUTY_MAX);
                 vTaskDelay(pdMS_TO_TICKS(50));   // delay mínimo para ceder CPU
+                break;
+
+            // Notificacion puntual de un pulso corto (ver haptics.h). Se ejecuta
+            // de un tiron, sin volver a leer s_pattern hasta terminar, así que
+            // se siente completa aunque proximity_task siga escribiendo
+            // s_pattern mientras tanto (sus escrituras se aplican recien en la
+            // proxima vuelta del while). Al final restaura s_pattern a OFF
+            // para no repetirse en bucle si nada mas lo vuelve a escribir.
+            case HAPTIC_PATTERN_NOTIFY_SINGLE:
+                set_duty(LEDC_CHANNEL_0, DUTY_MAX);
+                set_duty(LEDC_CHANNEL_1, DUTY_MAX);
+                vTaskDelay(pdMS_TO_TICKS(NOTIFY_PULSE_MS));
+                set_duty(LEDC_CHANNEL_0, DUTY_OFF);
+                set_duty(LEDC_CHANNEL_1, DUTY_OFF);
+                s_pattern = HAPTIC_PATTERN_OFF;
+                break;
+
+            // Notificacion puntual de dos pulsos cortos — mismo criterio que
+            // NOTIFY_SINGLE arriba.
+            case HAPTIC_PATTERN_NOTIFY_DOUBLE:
+                for (int i = 0; i < 2; i++) {
+                    set_duty(LEDC_CHANNEL_0, DUTY_MAX);
+                    set_duty(LEDC_CHANNEL_1, DUTY_MAX);
+                    vTaskDelay(pdMS_TO_TICKS(NOTIFY_PULSE_MS));
+                    set_duty(LEDC_CHANNEL_0, DUTY_OFF);
+                    set_duty(LEDC_CHANNEL_1, DUTY_OFF);
+                    if (i == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(NOTIFY_GAP_MS));
+                    }
+                }
+                s_pattern = HAPTIC_PATTERN_OFF;
                 break;
 
             // Patrón por defecto o apagado explícito: ambos motores detenidos.
