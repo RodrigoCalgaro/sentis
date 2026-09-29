@@ -39,6 +39,7 @@ class TtsSpeaker(
     context: Context,
     private val onLog: (String) -> Unit,
     private val sendAudioChunk: (ShortArray) -> Unit,
+    private val onReady: () -> Unit = {},
 ) {
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "tts-speaker") }
     private val cacheDir = context.cacheDir
@@ -57,6 +58,7 @@ class TtsSpeaker(
         }
         ready = true
         onLog("TTS de Android listo.")
+        onReady()
     }
 
     fun speak(text: String) {

@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/sentis_background">
+
+    <LinearLayout
+        android:id="@+id/settingsRoot"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
+            android:text="@string/settings_title"
+            android:textColor="@color/sentis_foreground"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/section_volume"
+            android:textColor="@color/sentis_accent"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="32dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/volumeDownButton"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:minWidth="72dp"
+                android:minHeight="72dp"
+                android:text="–"
+                android:textSize="28sp"
+                android:textColor="@color/sentis_background"
+                android:contentDescription="@string/volume_down_description"
+                android:backgroundTint="@color/sentis_accent" />
+
+            <TextView
+                android:id="@+id/volumeValueText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:accessibilityLiveRegion="polite"
+                android:textColor="@color/sentis_foreground"
+                android:textSize="40sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/volumeUpButton"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:minWidth="72dp"
+                android:minHeight="72dp"
+                android:text="+"
+                android:textSize="28sp"
+                android:textColor="@color/sentis_background"
+                android:contentDescription="@string/volume_up_description"
+                android:backgroundTint="@color/sentis_accent" />
+
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginBottom="24dp"
+            android:background="@color/sentis_divider"
+            android:importantForAccessibility="no" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/section_vibration"
+            android:textColor="@color/sentis_accent"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/setting_warn_label"
+            android:textColor="@color/sentis_foreground"
+            android:textSize="22sp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="32dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/warnDownButton"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:minWidth="72dp"
+                android:minHeight="72dp"
+                android:text="–"
+                android:textSize="28sp"
+                android:textColor="@color/sentis_background"
+                android:contentDescription="@string/warn_down_description"
+                android:backgroundTint="@color/sentis_accent" />
+
+            <TextView
+                android:id="@+id/warnValueText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:accessibilityLiveRegion="polite"
+                android:textColor="@color/sentis_foreground"
+                android:textSize="32sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/warnUpButton"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:minWidth="72dp"
+                android:minHeight="72dp"
+                android:text="+"
+                android:textSize="28sp"
+                android:textColor="@color/sentis_background"
+                android:contentDescription="@string/warn_up_description"
+                android:backgroundTint="@color/sentis_accent" />
+
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/setting_alert_label"
+            android:textColor="@color/sentis_foreground"
+            android:textSize="22sp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/alertDownButton"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:minWidth="72dp"
+                android:minHeight="72dp"
+                android:text="–"
+                android:textSize="28sp"
+                android:textColor="@color/sentis_background"
+                android:contentDescription="@string/alert_down_description"
+                android:backgroundTint="@color/sentis_accent" />
+
+            <TextView
+                android:id="@+id/alertValueText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:accessibilityLiveRegion="polite"
+                android:textColor="@color/sentis_foreground"
+                android:textSize="32sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/alertUpButton"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:minWidth="72dp"
+                android:minHeight="72dp"
+                android:text="+"
+                android:textSize="28sp"
+                android:textColor="@color/sentis_background"
+                android:contentDescription="@string/alert_up_description"
+                android:backgroundTint="@color/sentis_accent" />
+
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/disconnectButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:minHeight="64dp"
+            android:text="@string/disconnect_button"
+            android:textSize="22sp"
+            android:textColor="@color/sentis_foreground"
+            android:backgroundTint="@color/sentis_danger" />
+
+    </LinearLayout>
+</ScrollView>

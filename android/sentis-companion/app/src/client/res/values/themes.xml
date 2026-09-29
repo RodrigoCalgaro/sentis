@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Alto contraste (fondo negro, texto blanco, acento ámbar) para baja
+         visión — construido solo con atributos de android:Theme.Material,
+         sin agregar la dependencia de Material Components. -->
+    <style name="SentisClientTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorBackground">@color/sentis_background</item>
+        <item name="android:textColorPrimary">@color/sentis_foreground</item>
+        <item name="android:textColorSecondary">@color/sentis_foreground</item>
+        <item name="android:colorAccent">@color/sentis_accent</item>
+    </style>
+</resources>

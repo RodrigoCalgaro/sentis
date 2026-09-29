@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="sentis_background">#000000</color>
+    <color name="sentis_foreground">#FFFFFF</color>
+    <color name="sentis_accent">#FFC400</color>
+    <color name="sentis_danger">#D32F2F</color>
+    <color name="sentis_divider">#33FFFFFF</color>
+</resources>

@@ -24,6 +24,11 @@ import java.util.concurrent.Executors
 const val COMMAND_START_READING = 6
 const val COMMAND_STOP_READING = 7
 const val COMMAND_DETECT_COLOR = 8
+const val COMMAND_START_ALERTS = 9
+const val COMMAND_STOP_ALERTS = 10
+// Solo desde los botones de la app de debug (no hay frase de voz asociada).
+const val COMMAND_PREVIEW_ON = 11
+const val COMMAND_PREVIEW_OFF = 12
 
 // Registro voseo rioplatense, varias formas de decir cada comando para
 // tolerar cómo lo pronuncie cada usuario — Vosk devuelve texto libre, no
@@ -38,6 +43,14 @@ private val DETECT_COLOR_PHRASES = listOf(
     "detectar color", "detecta color", "que color es", "qué color es",
     "de que color es esto", "de qué color es esto", "decime el color",
     "decime que color es",
+)
+private val START_ALERTS_PHRASES = listOf(
+    "iniciar alertas", "inicia alertas", "activar alertas", "activa alertas",
+    "empezar alertas",
+)
+private val STOP_ALERTS_PHRASES = listOf(
+    "detener alertas", "detené alertas", "detene alertas", "detén alertas",
+    "desactivar alertas", "desactiva alertas", "parar alertas", "pará alertas",
 )
 
 private const val MODEL_ASSET_DIR = "model-es-small"
@@ -124,6 +137,10 @@ class VoiceCommandRecognizer(
                 onCommandDetected(COMMAND_STOP_READING, text)
             DETECT_COLOR_PHRASES.any { text == it } ->
                 onCommandDetected(COMMAND_DETECT_COLOR, text)
+            START_ALERTS_PHRASES.any { text == it } ->
+                onCommandDetected(COMMAND_START_ALERTS, text)
+            STOP_ALERTS_PHRASES.any { text == it } ->
+                onCommandDetected(COMMAND_STOP_ALERTS, text)
         }
     }
 

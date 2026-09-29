@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SENTIS</string>
+
+    <string name="splash_announcement">SENTIS, cargando</string>
+
+    <string name="connect_instruction">Tocá el botón para emparejar los anteojos SENTIS</string>
+    <string name="connect_button">Conectar</string>
+    <string name="connect_connecting">Conectando…</string>
+    <string name="connect_connecting_announcement">Conectando con SENTIS, esperá un momento</string>
+    <string name="connect_screen_announcement">Pantalla de conexión. Tocá el botón Conectar para emparejar los anteojos SENTIS</string>
+    <string name="connect_failed_announcement">No se pudo conectar con SENTIS. Volvé a intentar</string>
+
+    <string name="settings_title">Ajustes de SENTIS</string>
+    <string name="settings_screen_announcement">Conectado. Pantalla de ajustes de SENTIS</string>
+    <string name="section_volume">Volumen</string>
+    <string name="section_vibration">Vibración</string>
+    <string name="setting_warn_label">Umbral de precaución</string>
+    <string name="setting_alert_label">Umbral de alerta</string>
+    <string name="disconnect_button">Desconectar</string>
+    <string name="disconnected_user_announcement">Desconectado de SENTIS</string>
+    <string name="disconnected_unexpected_announcement">Se perdió la conexión con SENTIS. Volvé a conectar</string>
+
+    <string name="volume_down_description">Bajar volumen</string>
+    <string name="volume_up_description">Subir volumen</string>
+    <string name="volume_value_description">Volumen %1$d de %2$d</string>
+    <string name="warn_down_description">Bajar umbral de precaución</string>
+    <string name="warn_up_description">Subir umbral de precaución</string>
+    <string name="alert_down_description">Bajar umbral de alerta</string>
+    <string name="alert_up_description">Subir umbral de alerta</string>
+    <string name="settings_value_cm">%1$d cm</string>
+    <string name="stepper_value_description">%1$s, %2$s</string>
+</resources>

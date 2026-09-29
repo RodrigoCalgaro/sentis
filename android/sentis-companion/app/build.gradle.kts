@@ -15,6 +15,24 @@ android {
         versionName = "0.1-link-test"
     }
 
+    // Dos UIs sobre la misma lógica compartida (ver SentisController):
+    // "internal" es la UI de debug/testing de siempre, "client" es la UI
+    // para el usuario final. Dimension nombrada "audience", no "buildType",
+    // para no colisionar con los buildTypes debug/release (evita tareas
+    // Gradle ambiguas como assembleDebug).
+    flavorDimensions += "audience"
+    productFlavors {
+        create("internal") {
+            dimension = "audience"
+            applicationIdSuffix = ".internal"
+            versionNameSuffix = "-internal"
+        }
+        create("client") {
+            dimension = "audience"
+            applicationIdSuffix = ".client"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

@@ -34,6 +34,7 @@ const val MSG_COLOR_REQUEST = 6
 const val MSG_COLOR_RESULT = 7
 const val MSG_SETTINGS_SET = 8
 const val MSG_SETTINGS_STATE = 9
+const val MSG_PREVIEW_FRAME = 10
 
 // IDs de parametro para MSG_SETTINGS_SET/STATE — deben coincidir con
 // link_setting_id_t en components/link/link.h.
@@ -41,17 +42,37 @@ const val SETTING_VOLUME = 1
 const val SETTING_PROXIMITY_WARN_MM = 2
 const val SETTING_PROXIMITY_ALERT_MM = 3
 
+// Señal de alto nivel para que una UI reaccione sin parsear el string de
+// onStatus (frágil). onStatus se mantiene tal cual, solo para logging/display.
+sealed class ConnectionEvent {
+    object Connected : ConnectionEvent()
+    data class ConnectFailed(val message: String) : ConnectionEvent()
+    // userInitiated=true: alguien llamó a disconnect(). false: el link se
+    // cortó solo estando conectado (el remoto cerró el socket, error de
+    // lectura, etc.) — distinción que necesita la UI de cliente para saber
+    // si debe volver sola a la pantalla de conexión con un aviso distinto.
+    data class Disconnected(val userInitiated: Boolean) : ConnectionEvent()
+}
+
 class LinkClient(
     private val onLog: (String) -> Unit,
     private val onStatus: (String) -> Unit,
     private val onAudioChunk: (ByteArray) -> Unit,
     private val onOcrRequest: (ByteArray) -> Unit,
     private val onColorRequest: (ByteArray) -> Unit,
+    // Frame JPEG de la vista previa continua de debug (MSG_PREVIEW_FRAME),
+    // sin respuesta. Se llama desde el hilo de lectura del socket.
+    private val onPreviewFrame: (ByteArray) -> Unit = {},
     // Estado actual de volumen/umbrales de proximidad — llega al conectar y
     // despues de cada sendSettingsSet() (ver MSG_SETTINGS_STATE), con el
     // valor ya clampeado/validado por el firmware (puede no ser el pedido).
     private val onSettingsState: (volumePct: Int, warnMm: Int, alertMm: Int) -> Unit = { _, _, _ -> },
+    private val onConnectionEvent: (ConnectionEvent) -> Unit = {},
 ) {
+    private enum class State { IDLE, CONNECTING, CONNECTED }
+
+    @Volatile private var state: State = State.IDLE
+    @Volatile private var userInitiatedDisconnect = false
     @Volatile private var socket: Socket? = null
     @Volatile private var out: DataOutputStream? = null
     private val writeLock = Object()
@@ -69,30 +90,58 @@ class LinkClient(
     // versiones viejas o si no se pudo reservar esa red: se conecta con la
     // red que el sistema use por default (comportamiento previo).
     fun connect(host: String, port: Int, network: Network? = null) {
-        if (socket != null) {
-            onLog("Ya conectado, ignoro nuevo intento de conexion.")
+        if (state != State.IDLE) {
+            onLog("Ya conectado o conectando, ignoro nuevo intento de conexion.")
             return
         }
+        state = State.CONNECTING
+        userInitiatedDisconnect = false
         thread(name = "link-client") {
+            var reachedConnected = false
             try {
                 onStatus("Conectando a $host:$port...")
                 val s = Socket()
                 network?.bindSocket(s)
                 s.connect(InetSocketAddress(host, port), 5000)
+
+                if (userInitiatedDisconnect) {
+                    // Se pidió desconectar mientras el socket recién abría —
+                    // lo cerramos sin avisar "Connected".
+                    s.close()
+                    return@thread
+                }
+
                 socket = s
                 out = DataOutputStream(s.getOutputStream())
+                state = State.CONNECTED
+                reachedConnected = true
                 onStatus("Conectado a $host:$port")
                 onLog("Conectado.")
+                onConnectionEvent(ConnectionEvent.Connected)
                 readLoop(DataInputStream(s.getInputStream()))
             } catch (e: Exception) {
                 onLog("Error de conexion: ${e.message}")
+                if (!reachedConnected) {
+                    onConnectionEvent(ConnectionEvent.ConnectFailed(e.message ?: "error desconocido"))
+                }
             } finally {
-                disconnect()
+                // Única fuente de verdad para el evento Disconnected — sin
+                // importar si el try salió por una excepción de conexión, por
+                // readLoop() retornando (el remoto cerró), o por un
+                // disconnect() externo cerrando el socket. Así nunca se
+                // dispara dos veces.
+                val wasConnected = reachedConnected
+                cleanup()
+                if (wasConnected) {
+                    onConnectionEvent(ConnectionEvent.Disconnected(userInitiated = userInitiatedDisconnect))
+                }
+                state = State.IDLE
+                userInitiatedDisconnect = false
             }
         }
     }
 
-    fun disconnect() {
+    private fun cleanup() {
         try {
             socket?.close()
         } catch (_: Exception) {
@@ -101,6 +150,20 @@ class LinkClient(
         socket = null
         out = null
         onStatus("Desconectado")
+    }
+
+    // Llamado desde el hilo de UI (botón "Desconectar"). Solo marca la
+    // intención y cierra el socket para desbloquear readLoop() — no emite
+    // ConnectionEvent acá: eso pasa siempre por el `finally` de connect(),
+    // para no duplicar el evento si las dos rutas se solapan.
+    fun disconnect() {
+        if (state == State.IDLE) return
+        userInitiatedDisconnect = true
+        try {
+            socket?.close()
+        } catch (_: Exception) {
+            // ya estaba cerrado, no importa
+        }
     }
 
     private fun readLoop(input: DataInputStream) {
@@ -140,6 +203,7 @@ class LinkClient(
                 MSG_AUDIO -> onAudioChunk(payload)
                 MSG_OCR_REQUEST -> onOcrRequest(payload)
                 MSG_COLOR_REQUEST -> onColorRequest(payload)
+                MSG_PREVIEW_FRAME -> onPreviewFrame(payload)
                 MSG_SETTINGS_STATE -> {
                     if (payload.size >= 12) {
                         val p = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
