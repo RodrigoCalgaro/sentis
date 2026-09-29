@@ -76,6 +76,16 @@ bool ocr_is_reading(void);
 // hay una lectura o una detección de color en curso.
 void ocr_detect_color(void);
 
+// Activa/desactiva la vista previa continua hacia la app (solo para la app de
+// debug, comandos 11/12 en main/sentis.c): manda frames JPEG de 640x480 a
+// ~4 fps por link_send_preview_frame(), reusando la misma tarea y buffers que
+// lectura/color (sin memoria nueva). No pone ocr_is_reading() en true ni pausa
+// la visión, así que las alertas de proximidad siguen activas. Una lectura o
+// detección de color pedida durante la preview la interrumpe y la preview se
+// retoma sola al terminar. Se apaga sola si no hay celular conectado. No
+// bloqueante; no-op si ocr_init() no corrió.
+void ocr_preview_set(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

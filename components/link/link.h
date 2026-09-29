@@ -172,6 +172,11 @@ esp_err_t link_request_color(const uint8_t *jpeg, size_t jpeg_len,
                               char *out_text, size_t out_text_max,
                               TickType_t timeout_ticks);
 
+// Manda un frame JPEG como LINK_MSG_PREVIEW_FRAME (vista previa de debug, ver
+// components/ocr::ocr_preview_set()). Sin respuesta: la app solo lo muestra.
+// ESP_ERR_NOT_FOUND si no hay celular conectado.
+esp_err_t link_send_preview_frame(const uint8_t *jpeg, size_t jpeg_len);
+
 #ifdef __cplusplus
 }
 #endif

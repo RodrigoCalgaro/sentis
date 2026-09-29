@@ -12,7 +12,7 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\Rodri\\Projects\\arduino_sentis\\arduino\\sentis\\build"
   ],
-  "idf.portWin": "COM3",
   "idf.flashType": "UART",
-  "C_Cpp.errorSquiggles": "disabled"
+  "C_Cpp.errorSquiggles": "disabled",
+  "idf.port": "COM3"
 }

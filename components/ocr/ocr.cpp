@@ -52,12 +52,26 @@ static const char *TAG = "ocr";
 typedef enum {
     OCR_JOB_READ = 0,
     OCR_JOB_COLOR,
+    OCR_JOB_PREVIEW,
 } ocr_job_t;
+
+// Vista previa continua (solo para la app de debug, ver ocr_preview_set() en
+// ocr.h). A diferencia de READ/COLOR NO levanta s_reading ni pausa el análisis
+// de vision: las alertas de proximidad tienen que seguir funcionando mientras
+// se valida con la preview. Baja resolución y calidad para no saturar el
+// WiFi/CPU compartidos con el audio del micrófono.
+#define PREVIEW_SCALE       2       // 1280x960 → 640x480
+#define PREVIEW_W           (VISION_FRAME_W / PREVIEW_SCALE)
+#define PREVIEW_H           (VISION_FRAME_H / PREVIEW_SCALE)
+#define PREVIEW_QUALITY     50
+#define PREVIEW_PERIOD_MS   250     // ~4 fps máx (menos si codificar/enviar tarda)
 
 static SemaphoreHandle_t s_start_sem = nullptr;
 static volatile ocr_job_t s_pending_job = OCR_JOB_READ;
 static volatile bool s_stop_req = false;
 static volatile bool s_reading = false;
+static volatile bool s_preview_on = false;
+static volatile bool s_previewing = false;  // ocr_task está dentro del loop de preview
 static bool s_initialized = false;
 
 static jpeg_encoder_handle_t s_enc = nullptr;
@@ -118,9 +132,58 @@ static void ocr_task(void *arg)
         .pixel_reverse = false,
     };
 
+    const jpeg_encode_cfg_t preview_cfg = {
+        .height        = PREVIEW_H,
+        .width         = PREVIEW_W,
+        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
+        .image_quality = PREVIEW_QUALITY,
+        .pixel_reverse = false,
+    };
+
     while (true) {
-        xSemaphoreTake(s_start_sem, portMAX_DELAY);
-        ocr_job_t job = s_pending_job;
+        ocr_job_t job;
+        // Con la preview activa no se bloquea: si no hay un trabajo pedido
+        // (lectura/color), se sigue con la preview. Un trabajo pedido durante
+        // la preview la interrumpe (ver el loop de OCR_JOB_PREVIEW) y, al
+        // terminar, la preview se retoma sola.
+        if (xSemaphoreTake(s_start_sem, s_preview_on ? 0 : portMAX_DELAY) == pdTRUE) {
+            job = s_pending_job;
+        } else if (s_preview_on) {
+            job = OCR_JOB_PREVIEW;
+        } else {
+            continue;
+        }
+
+        if (job == OCR_JOB_PREVIEW) {
+            if (!s_preview_on) continue;  // despertada justo al apagarse
+            s_previewing = true;
+            ESP_LOGI(TAG, "preview iniciada");
+            // uxSemaphoreGetCount > 0: hay una lectura/color esperando.
+            while (s_preview_on && uxSemaphoreGetCount(s_start_sem) == 0) {
+                if (vision_copy_display_frame_scaled(s_raw, PREVIEW_W * PREVIEW_H * 2, PREVIEW_SCALE)) {
+                    mirror_rgb565_inplace(s_raw, PREVIEW_W, PREVIEW_H);
+                    uint32_t jpeg_size = 0;
+                    esp_err_t enc_ret = jpeg_encoder_process(s_enc, &preview_cfg,
+                                                               s_raw, PREVIEW_W * PREVIEW_H * 2,
+                                                               s_jpeg_out, OCR_JPEG_OUT_SIZE,
+                                                               &jpeg_size);
+                    if (enc_ret == ESP_OK && jpeg_size > 0) {
+                        esp_err_t ret = link_send_preview_frame(s_jpeg_out, jpeg_size);
+                        if (ret == ESP_ERR_NOT_FOUND) {
+                            s_preview_on = false;  // sin celular: nadie mira
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "jpeg encode (preview): %s", esp_err_to_name(enc_ret));
+                    }
+                }
+                vTaskDelay(pdMS_TO_TICKS(PREVIEW_PERIOD_MS));
+            }
+            s_previewing = false;
+            ESP_LOGI(TAG, "preview detenida");
+            continue;
+        }
+
         s_reading = true;
         s_stop_req = false;
         // Pausar la heurística de posición de vision_task durante la captura:
@@ -294,6 +357,20 @@ void ocr_reading_stop(void)
 bool ocr_is_reading(void)
 {
     return s_reading;
+}
+
+void ocr_preview_set(bool enabled)
+{
+    if (!s_initialized) return;
+    s_preview_on = enabled;
+    if (enabled && !s_previewing) {
+        // Despierta a ocr_task si está bloqueada esperando trabajo. Si está
+        // ocupada con una lectura/color, retoma la preview sola al terminar
+        // (ver el top del loop de ocr_task) y este give queda sin consumir
+        // hasta entonces, sin efecto (job PREVIEW).
+        s_pending_job = OCR_JOB_PREVIEW;
+        xSemaphoreGive(s_start_sem);
+    }
 }
 
 void ocr_detect_color(void)

@@ -35,6 +35,7 @@ typedef enum {
     LINK_MSG_COLOR_RESULT = 7,
     LINK_MSG_SETTINGS_SET = 8,
     LINK_MSG_SETTINGS_STATE = 9,
+    LINK_MSG_PREVIEW_FRAME = 10,  // ESP32 -> celular, JPEG de vista previa de debug
 } link_msg_type_t;
 
 // Payload de LINK_MSG_SETTINGS_SET: mismo layout en ambos lados (int32 LE +
@@ -230,6 +231,11 @@ esp_err_t link_request_color(const uint8_t *jpeg, size_t jpeg_len,
         strlcpy(out_text, s_color_result_text, out_text_max);
     }
     return ESP_OK;
+}
+
+esp_err_t link_send_preview_frame(const uint8_t *jpeg, size_t jpeg_len)
+{
+    return link_send_framed(LINK_MSG_PREVIEW_FRAME, jpeg, (uint32_t)jpeg_len);
 }
 
 // Arma un LINK_MSG_SETTINGS_STATE con s_settings_get_cb() y lo manda. No-op

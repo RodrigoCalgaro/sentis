@@ -31,6 +31,15 @@
 // cada evaluación se lee el resultado del último frame analizado sin bloquear.
 #define PROXIMITY_POLL_MS   50
 
+// Alertas de proximidad activas. Arrancan en true (seguridad por defecto: sin
+// celular no hay forma de darlas de alta por voz). "detener alertas" (comando
+// 10) las apaga para conversaciones cara a cara; "iniciar alertas" (9) las
+// reactiva. on_link_disconnected las vuelve a activar siempre: si el usuario
+// pierde el celular no podría reactivarlas y quedaría sin protección.
+// Escrita desde la tarea de link, leída desde proximity_task: bool volátil,
+// atómico en esta arquitectura.
+static volatile bool s_alerts_enabled = true;
+
 // -----------------------------------------------------------------------------
 // on_link_command — callback invocada por el componente link cuando llega un
 // comando de voz reconocido desde la app Android companion (Vosk, del lado
@@ -60,6 +69,19 @@ static void on_link_command(const link_command_t *cmd)
             break;
         case 8:  // "detectar color"
             ocr_detect_color();
+            break;
+        case 9:  // "iniciar alertas"
+            s_alerts_enabled = true;
+            break;
+        case 10: // "detener alertas"
+            s_alerts_enabled = false;
+            haptic_set_pattern(HAPTIC_PATTERN_OFF);
+            break;
+        case 11: // vista previa de cámara ON (solo app de debug, sin voz)
+            ocr_preview_set(true);
+            break;
+        case 12: // vista previa de cámara OFF
+            ocr_preview_set(false);
             break;
         default:
             break;
@@ -137,6 +159,8 @@ static void on_link_connected(void)
 
 static void on_link_disconnected(void)
 {
+    s_alerts_enabled = true;
+    ocr_preview_set(false);
     haptic_set_pattern(HAPTIC_PATTERN_NOTIFY_SINGLE);
 }
 
@@ -167,6 +191,10 @@ static void on_link_disconnected(void)
 //     restaura la lógica normal recién cuando el comando "stop reading" baja
 //     la bandera (ver ocr_reading_stop() en ocr.cpp).
 //
+//   s_alerts_enabled == false   → usuario dijo "detener alertas": OFF, igual
+//     que la lectura OCR, hasta "iniciar alertas" o hasta que el celular
+//     se desconecte.
+//
 // La función haptic_set_pattern es segura para llamar desde esta tarea porque
 // la escritura sobre s_pattern es atómica (ver haptics.c).
 // La lectura de vision_get_obstacle_side() también es atómica (volatile uint8_t).
@@ -176,8 +204,9 @@ static void proximity_task(void *arg)
     while (1) {
         haptic_pattern_t pattern;
 
-        if (ocr_is_reading()) {
-            // Lectura OCR en curso: prioridad absoluta, ignorar LiDAR/visión.
+        if (ocr_is_reading() || !s_alerts_enabled) {
+            // Lectura OCR en curso o alertas detenidas por el usuario:
+            // prioridad absoluta, ignorar LiDAR/visión.
             pattern = HAPTIC_PATTERN_OFF;
             haptic_set_pattern(pattern);
             vTaskDelay(pdMS_TO_TICKS(PROXIMITY_POLL_MS));

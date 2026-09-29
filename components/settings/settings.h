@@ -28,8 +28,8 @@ extern "C" {
 // =============================================================================
 
 #define SETTINGS_DEFAULT_VOLUME_PERCENT       70
-#define SETTINGS_DEFAULT_PROXIMITY_WARN_MM   1500
-#define SETTINGS_DEFAULT_PROXIMITY_ALERT_MM   500
+#define SETTINGS_DEFAULT_PROXIMITY_WARN_MM   2000
+#define SETTINGS_DEFAULT_PROXIMITY_ALERT_MM  1000
 
 #define SETTINGS_PROXIMITY_MIN_GAP_MM  50
 #define SETTINGS_PROXIMITY_WARN_MIN_MM   300
