@@ -58,11 +58,3 @@ void audio_mute(bool mute);
 // count   : number of mono samples.
 // Internally duplicated to stereo and written to I2S TX. Blocking.
 esp_err_t audio_play_pcm(const int16_t *samples, size_t count);
-
-// Read raw stereo PCM samples from the ES8311 ADC (microphone path).
-// buf         : destination buffer, must hold `stereo_samples` int16_t values.
-// stereo_samples: number of interleaved L/R int16 samples to read (must be even).
-//               Each pair is one stereo frame: [L, R, L, R, ...].
-// timeout_ticks: FreeRTOS tick timeout (portMAX_DELAY to block indefinitely).
-// Returns ESP_OK, ESP_ERR_INVALID_STATE (audio not init'd), or ESP_ERR_TIMEOUT.
-esp_err_t audio_read_pcm_stereo(int16_t *buf, size_t stereo_samples, TickType_t timeout_ticks);

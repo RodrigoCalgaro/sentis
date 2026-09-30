@@ -24,8 +24,15 @@
 #define BOARD_I2S_MCLK_GPIO       13
 #define BOARD_I2S_SCLK_GPIO       12     // BCLK
 #define BOARD_I2S_LRCK_GPIO       10     // WS / frame sync
-#define BOARD_I2S_ASDOUT_GPIO     11     // Codec → ESP (recording/mic)
 #define BOARD_I2S_DSDIN_GPIO      9      // ESP → Codec (playback)
+
+// Micrófono externo INMP441 (I2S1, master RX). Cableado físico al header:
+//   INMP441 SCK -> BOARD_MIC_SCK_GPIO   INMP441 WS -> BOARD_MIC_WS_GPIO
+//   INMP441 SD  -> BOARD_MIC_SD_GPIO    VDD -> 3V3, GND -> GND, L/R -> GND (canal izq.)
+#define BOARD_MIC_I2S_NUM         1       // I2S_NUM_1
+#define BOARD_MIC_SCK_GPIO        21      // BCLK (ESP -> mic)
+#define BOARD_MIC_WS_GPIO         22      // LRCK (ESP -> mic)
+#define BOARD_MIC_SD_GPIO         23      // datos (mic -> ESP)
 
 // I2C control bus (shared: codec ES8311 + camera OV5647)
 #define BOARD_I2C_NUM             0       // I2C_NUM_0
@@ -69,6 +76,7 @@
 // DO NOT USE — reserved for onboard peripherals
 // 7, 8       : I2C bus (codec + camera)
 // 9–13       : I2S bus (codec)
+// 21–23      : I2S1 micrófono INMP441
 // 37, 38     : UART0 (USB-UART debug, CH343P)
 // 39–44      : SDMMC (microSD)
 // 53         : PA_CTRL (amplifier NS4150B)

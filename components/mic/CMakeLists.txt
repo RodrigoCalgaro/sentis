@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "mic.c"
     INCLUDE_DIRS "."
-    REQUIRES audio freertos
+    REQUIRES esp_driver_i2s freertos board
 )

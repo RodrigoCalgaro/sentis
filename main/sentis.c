@@ -64,8 +64,10 @@ static void on_link_command(const link_command_t *cmd)
         case 6:  // "start reading"
             ocr_reading_start();
             break;
-        case 7:  // "stop reading"
+        case 7:  // "parar"/"detener": parada general — lectura Y alertas
             ocr_reading_stop();
+            s_alerts_enabled = false;
+            haptic_set_pattern(HAPTIC_PATTERN_OFF);
             break;
         case 8:  // "detectar color"
             ocr_detect_color();
@@ -273,13 +275,13 @@ static void proximity_task(void *arg)
 //    4. cp_ota_check_and_update — actualiza el firmware del C6 si hace falta
 //    5. settings_init — carga volumen/umbrales de proximidad desde NVS
 //    6. link_init     — servidor TCP hacia la app companion (Fase 2)
-//    7. audio_init    — ES8311 + I2S0 full-duplex + NS4150B (Fase 2 + Fase 4)
-//                       Abre TX (playback) y RX (micrófono) en el mismo I2S0.
+//    7. audio_init    — ES8311 + I2S0 TX + NS4150B (Fase 2)
+//                       Solo playback; el micrófono va por I2S1 (mic_init).
 //                       Aplica el volumen cargado por settings_init().
 //    8. tts_init      — monta partición de flash "voice_data" y carga voz
 //                       eSpeak-NG (Fase 6A / Fase 2). Reproduce "Sentis
 //                       Encendido" como confirmación de arranque.
-//    9. mic_init      — tarea de captura: ES8311 ADC → chunks mono → link_send_audio()
+//    9. mic_init      — tarea de captura: INMP441 (I2S1) → chunks mono → link_send_audio()
 //   10. vision_init   — I2C + MIPI CSI-2 (Fase 5)
 //   11. ocr_init      — captura+JPEG, pedido de lectura vía app companion (Fase 2)
 //   12. monitor_init  — transmisión de frames para desarrollo (Fase 5)
@@ -364,7 +366,7 @@ void app_main(void)
     // tiene ya ningún consumidor en el firmware activo. Queda disponible en
     // components/storage/ para si hace falta SD a futuro (ver el conflicto
     // conocido SDMMC-vs-esp_hosted documentado ahí).
-    audio_init();     // ES8311 + I2S0 full-duplex (TX playback + RX mic)
+    audio_init();     // ES8311 + I2S0 TX (playback)
 
     // Aplicar el volumen persistido (o el default) recién ahora — antes de
     // esto audio_set_volume() no tiene codec inicializado para escribirle.
@@ -382,7 +384,7 @@ void app_main(void)
     }
 
     // ---- Fase 2: micrófono → app companion ----
-    // mic_init arranca la tarea de captura: I2S0 RX (ES8311 ADC) → downmix a
+    // mic_init arranca la tarea de captura: I2S1 RX (INMP441 externo) → int16
     // mono → link_send_audio() manda cada chunk al celular por TCP. Ya no hay
     // reconocimiento de voz on-device (ESP-SR/MultiNet se retiró — el celular
     // corre Vosk sobre este mismo stream de PCM). link_send_audio() no
