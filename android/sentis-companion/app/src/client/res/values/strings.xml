@@ -5,10 +5,11 @@
     <string name="splash_announcement">SENTIS, cargando</string>
 
     <string name="connect_instruction">Tocá el botón para emparejar los anteojos SENTIS</string>
+    <string name="connect_notice">Al tocar Conectar, el teléfono va a mostrar un aviso del sistema para conectarse a la red WiFi de los anteojos. Es normal. Aceptalo tocando el botón Conectar o Permitir del aviso.</string>
     <string name="connect_button">Conectar</string>
     <string name="connect_connecting">Conectando…</string>
-    <string name="connect_connecting_announcement">Conectando con SENTIS, esperá un momento</string>
-    <string name="connect_screen_announcement">Pantalla de conexión. Tocá el botón Conectar para emparejar los anteojos SENTIS</string>
+    <string name="connect_connecting_announcement">Conectando con SENTIS. Va a aparecer un aviso del sistema: aceptalo tocando Conectar o Permitir</string>
+    <string name="connect_screen_announcement">Pantalla de conexión. Tocá el botón Conectar para emparejar los anteojos SENTIS. Se va a pedir permiso para conectarse a su red WiFi</string>
     <string name="connect_failed_announcement">No se pudo conectar con SENTIS. Volvé a intentar</string>
 
     <string name="settings_title">Ajustes de SENTIS</string>

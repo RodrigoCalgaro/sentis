@@ -17,6 +17,20 @@
         android:textSize="24sp"
         android:gravity="center" />
 
+    <!-- Aviso previo al diálogo nativo de Android (pedido de red WiFi): lo lee
+         TalkBack en orden, entre la instrucción y el botón, así el usuario
+         sabe qué va a pasar antes de tocar Conectar. -->
+    <TextView
+        android:id="@+id/connectNotice"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="32dp"
+        android:text="@string/connect_notice"
+        android:textColor="@color/sentis_foreground"
+        android:textSize="18sp"
+        android:gravity="center"
+        android:importantForAccessibility="yes" />
+
     <Button
         android:id="@+id/connectButton"
         android:layout_width="match_parent"

@@ -27,6 +27,7 @@ const val COMMAND_DETECT_COLOR = 8
 const val COMMAND_START_ALERTS = 9
 const val COMMAND_STOP_ALERTS = 10
 // Solo desde los botones de la app de debug (no hay frase de voz asociada).
+// Por voz, apagar las alertas es "parar"/"detener" (COMMAND_STOP_READING).
 const val COMMAND_PREVIEW_ON = 11
 const val COMMAND_PREVIEW_OFF = 12
 
@@ -36,8 +37,11 @@ const val COMMAND_PREVIEW_OFF = 12
 private val START_READING_PHRASES = listOf(
     "leer", "lee esto", "leé esto", "empezar a leer", "lectura",
 )
+// "Parar"/"detener" es el comando de parada general: el firmware detiene tanto
+// la lectura como las alertas (ver case 7 en on_link_command, main/sentis.c).
 private val STOP_READING_PHRASES = listOf(
-    "parar", "para", "dejá de leer", "deja de leer", "parar de leer", "basta",
+    "parar", "para", "detener", "detené", "detene", "detén",
+    "dejá de leer", "deja de leer", "parar de leer", "basta",
 )
 private val DETECT_COLOR_PHRASES = listOf(
     "detectar color", "detecta color", "que color es", "qué color es",
@@ -45,12 +49,8 @@ private val DETECT_COLOR_PHRASES = listOf(
     "decime que color es",
 )
 private val START_ALERTS_PHRASES = listOf(
-    "iniciar alertas", "inicia alertas", "activar alertas", "activa alertas",
-    "empezar alertas",
-)
-private val STOP_ALERTS_PHRASES = listOf(
-    "detener alertas", "detené alertas", "detene alertas", "detén alertas",
-    "desactivar alertas", "desactiva alertas", "parar alertas", "pará alertas",
+    "alerta", "alertas", "iniciar alertas", "inicia alertas", "activar alertas",
+    "activa alertas", "empezar alertas",
 )
 
 private const val MODEL_ASSET_DIR = "model-es-small"
@@ -139,8 +139,6 @@ class VoiceCommandRecognizer(
                 onCommandDetected(COMMAND_DETECT_COLOR, text)
             START_ALERTS_PHRASES.any { text == it } ->
                 onCommandDetected(COMMAND_START_ALERTS, text)
-            STOP_ALERTS_PHRASES.any { text == it } ->
-                onCommandDetected(COMMAND_STOP_ALERTS, text)
         }
     }
 

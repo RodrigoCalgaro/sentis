@@ -210,7 +210,12 @@ class SentisController(
     fun sendCommand(commandId: Int, text: String) {
         when (commandId) {
             COMMAND_START_READING -> lastOcrText = ""
-            COMMAND_STOP_READING -> ttsSpeaker.stop()
+            // "parar" es parada general (el firmware también apaga las alertas):
+            // primero corta la locución en curso y después confirma.
+            COMMAND_STOP_READING -> {
+                ttsSpeaker.stop()
+                ttsSpeaker.speak("Alertas desactivadas")
+            }
             // Confirmación hablada: con las alertas apagadas el usuario tiene
             // que saber que el bastón no lo va a avisar de obstáculos.
             COMMAND_START_ALERTS -> ttsSpeaker.speak("Alertas activadas")
